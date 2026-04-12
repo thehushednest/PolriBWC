@@ -50,11 +50,29 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
   final method = request.method.toUpperCase();
 
   try {
+    if (method == 'GET' && path == '/dashboard') {
+      final htmlFile = File('server/data/dashboard.html');
+      if (!await htmlFile.exists()) {
+        response.statusCode = HttpStatus.notFound;
+        response.write('Dashboard file not found');
+        await response.close();
+        return;
+      }
+      response.headers.contentType = ContentType.html;
+      response.write(await htmlFile.readAsString());
+      await response.close();
+      return;
+    }
+
     if (method == 'GET' && path == '/api/v1/health') {
       return _writeJson(response, {
         'status': 'ok',
         'service': 'polri-bwc-local-server',
         'time': DateTime.now().toUtc().toIso8601String(),
+        'onlineCount': _resolvedPresenceEntries(store).where((e) => e['resolvedStatus'] == 'online').length,
+        'totalDevices': store.state.presence.length,
+        'recordingCount': store.state.recordings.length,
+        'reportCount': store.state.reports.length,
       });
     }
 
@@ -95,6 +113,7 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
         response.statusCode = HttpStatus.badRequest;
         return _writeJson(response, {'error': 'username required'});
       }
+      final existing = store.state.presence[username] ?? const {};
       final updated = {
         ...store.state.presence,
         username: {
@@ -104,6 +123,9 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
           'activeChannelId': body['activeChannelId'] ?? '',
           'clientTimeIso': body['clientTimeIso'] ?? '',
           'lastSeenIso': DateTime.now().toUtc().toIso8601String(),
+          // Pertahankan koordinat lama jika tidak ada yang baru dikirim
+          'latitude': body['latitude'] ?? existing['latitude'],
+          'longitude': body['longitude'] ?? existing['longitude'],
         },
       };
       store.state = store.state.copyWith(presence: updated);
@@ -393,6 +415,8 @@ List<Map<String, dynamic>> _resolvedPresenceEntries(
                           '') ==
                       username),
               'resolvedStatus': isOnline ? 'online' : 'offline',
+              if (entry['latitude'] != null) 'latitude': entry['latitude'],
+              if (entry['longitude'] != null) 'longitude': entry['longitude'],
             };
           })
           .where((entry) {

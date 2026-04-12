@@ -133,6 +133,8 @@ class PolriBackendApi implements BackendGateway {
     required String deviceId,
     required String status,
     String? activeChannelId,
+    double? latitude,
+    double? longitude,
   }) async {
     try {
       await _client.postJson('${_config.presenceEndpoint}/heartbeat', {
@@ -141,6 +143,8 @@ class PolriBackendApi implements BackendGateway {
         'status': status,
         'activeChannelId': activeChannelId ?? '',
         'clientTimeIso': DateTime.now().toUtc().toIso8601String(),
+        'latitude': latitude,
+        'longitude': longitude,
       });
     } catch (_) {}
   }

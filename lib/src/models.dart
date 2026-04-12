@@ -304,6 +304,8 @@ class PresenceEntry {
     required this.activeChannelId,
     required this.lastSeenIso,
     required this.resolvedStatus,
+    this.latitude,
+    this.longitude,
     this.isTalking = false,
     this.signalLabel = 'Online',
   });
@@ -314,8 +316,12 @@ class PresenceEntry {
   final String activeChannelId;
   final String lastSeenIso;
   final String resolvedStatus;
+  final double? latitude;
+  final double? longitude;
   final bool isTalking;
   final String signalLabel;
+
+  bool get hasLocation => latitude != null && longitude != null;
 
   factory PresenceEntry.fromJson(Map<String, dynamic> json) {
     return PresenceEntry(
@@ -325,6 +331,8 @@ class PresenceEntry {
       activeChannelId: json['activeChannelId'] as String? ?? '',
       lastSeenIso: json['lastSeenIso'] as String? ?? '',
       resolvedStatus: json['resolvedStatus'] as String? ?? 'offline',
+      latitude: (json['latitude'] as num?)?.toDouble(),
+      longitude: (json['longitude'] as num?)?.toDouble(),
       isTalking: json['isTalking'] as bool? ?? false,
       signalLabel: json['signalLabel'] as String? ?? 'Online',
     );

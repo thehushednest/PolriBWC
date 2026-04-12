@@ -47,6 +47,8 @@ class MockBackendService implements BackendGateway {
     required String deviceId,
     required String status,
     String? activeChannelId,
+    double? latitude,
+    double? longitude,
   }) async {}
 
   @override

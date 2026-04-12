@@ -18,6 +18,8 @@ abstract class BackendGateway {
     required String deviceId,
     required String status,
     String? activeChannelId,
+    double? latitude,
+    double? longitude,
   });
   Future<Map<String, List<ChatMessage>>> loadChatThreads();
   Future<void> saveChatThreads(Map<String, List<ChatMessage>> threads);

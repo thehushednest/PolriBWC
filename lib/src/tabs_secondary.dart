@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:intl/intl.dart';
+import 'package:latlong2/latlong.dart';
 
 import 'models.dart';
-import 'navigation.dart';
 import 'storage.dart';
 import 'ui_components.dart';
 
@@ -531,15 +532,21 @@ class MapTab extends StatelessWidget {
   const MapTab({
     super.key,
     required this.team,
+    required this.onlineOfficers,
     required this.coordinateLabel,
     required this.onChat,
     required this.onSos,
+    this.currentLat,
+    this.currentLng,
   });
 
   final List<PersonnelStatus> team;
+  final List<PresenceEntry> onlineOfficers;
   final String coordinateLabel;
   final ValueChanged<PersonnelStatus> onChat;
   final ValueChanged<PersonnelStatus> onSos;
+  final double? currentLat;
+  final double? currentLng;
 
   @override
   Widget build(BuildContext context) {
@@ -604,15 +611,15 @@ class MapTab extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 10),
-        Container(
-          height: 165,
-          decoration: BoxDecoration(
-            color: const Color(0xFFE9EFF7),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: CustomPaint(
-            painter: MockMapPainter(),
-            child: const SizedBox.expand(),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: SizedBox(
+            height: 220,
+            child: _OfficerMap(
+              onlineOfficers: onlineOfficers,
+              currentLat: currentLat,
+              currentLng: currentLng,
+            ),
           ),
         ),
         const SizedBox(height: 14),
@@ -1460,6 +1467,97 @@ class _PreviewBadge extends StatelessWidget {
         border: Border.all(color: const Color(0xFF4A5260)),
       ),
       child: const Icon(Icons.circle, color: Color(0xFF565F6F), size: 12),
+    );
+  }
+}
+
+class _OfficerMap extends StatelessWidget {
+  const _OfficerMap({
+    required this.onlineOfficers,
+    this.currentLat,
+    this.currentLng,
+  });
+
+  final List<PresenceEntry> onlineOfficers;
+  final double? currentLat;
+  final double? currentLng;
+
+  static const _defaultCenter = LatLng(-6.2088, 106.8456);
+
+  Color _markerColor(PresenceEntry e) {
+    if (e.isTalking) return const Color(0xFFFF6A6A);
+    if (e.status == 'recording') return const Color(0xFF3FB950);
+    if (e.resolvedStatus == 'online') return const Color(0xFF2F81F7);
+    return const Color(0xFF7D8590);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final withLocation = onlineOfficers.where((e) => e.hasLocation).toList();
+
+    LatLng center = _defaultCenter;
+    double zoom = 13;
+    if (currentLat != null && currentLng != null) {
+      center = LatLng(currentLat!, currentLng!);
+      zoom = 15;
+    } else if (withLocation.isNotEmpty) {
+      center = LatLng(withLocation.first.latitude!, withLocation.first.longitude!);
+      zoom = 14;
+    }
+
+    return FlutterMap(
+      options: MapOptions(initialCenter: center, initialZoom: zoom),
+      children: [
+        TileLayer(
+          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          userAgentPackageName: 'com.polri.bodyworn',
+        ),
+        MarkerLayer(
+          markers: [
+            // Posisi pengguna saat ini
+            if (currentLat != null && currentLng != null)
+              Marker(
+                point: LatLng(currentLat!, currentLng!),
+                width: 44,
+                height: 44,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF2F66B4),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2.5),
+                    boxShadow: [
+                      BoxShadow(color: const Color(0xFF2F66B4).withValues(alpha: 0.5), blurRadius: 10, spreadRadius: 2),
+                    ],
+                  ),
+                  child: const Icon(Icons.my_location, color: Colors.white, size: 20),
+                ),
+              ),
+            // Marker petugas lain
+            for (final e in withLocation)
+              Marker(
+                point: LatLng(e.latitude!, e.longitude!),
+                width: 38,
+                height: 38,
+                child: Tooltip(
+                  message: '${e.username} · ${e.signalLabel}',
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: _markerColor(e),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.7), width: 2),
+                      boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 6, offset: Offset(0, 2))],
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      e.initials,
+                      style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ],
     );
   }
 }

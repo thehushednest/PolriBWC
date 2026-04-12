@@ -111,6 +111,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   OfficerSession? _session;
   PermissionSummary _permissions = const PermissionSummary();
   List<RecordingEntry> _recordings = const [];
+  List<PresenceEntry> _presenceEntries = const [];
+  double? _currentLat;
+  double? _currentLng;
   bool _isInitializing = true;
   bool _isRecording = false;
   bool _isMuted = false;
@@ -118,6 +121,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   BodyWornTab _currentTab = BodyWornTab.home;
   DateTime? _recordingStartedAt;
   Timer? _ticker;
+  Timer? _presenceTimer;
   String _selectedGalleryFilter = 'Semua';
   String _selectedReportType = 'Penangkapan';
   String? _selectedRecordingId;
@@ -145,7 +149,31 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     'Lainnya',
   ];
 
-  final List<PersonnelStatus> _patrolTeam = const [];
+  List<PersonnelStatus> get _patrolTeam => _presenceEntries.map((entry) {
+    final ch = entry.activeChannelId.isEmpty
+        ? '-'
+        : entry.activeChannelId.toUpperCase();
+    final detail = entry.hasLocation
+        ? '${entry.latitude!.toStringAsFixed(4)}, ${entry.longitude!.toStringAsFixed(4)} · $ch'
+        : '$ch · ${entry.signalLabel}';
+    final isRecording = entry.status == 'recording';
+    return PersonnelStatus(
+      initials: entry.initials,
+      name: entry.username,
+      detail: detail,
+      status: entry.isTalking ? 'PTT' : isRecording ? 'Rec' : entry.resolvedStatus == 'online' ? 'Standby' : 'Offline',
+      statusColor: entry.isTalking
+          ? const Color(0xFFFF6A6A)
+          : isRecording
+              ? const Color(0xFF19A66A)
+              : entry.resolvedStatus == 'online'
+                  ? const Color(0xFF4A88E6)
+                  : const Color(0xFF9EA8B6),
+      dotColor: entry.resolvedStatus == 'online'
+          ? const Color(0xFF1BA467)
+          : const Color(0xFF9EA8B6),
+    );
+  }).toList();
 
   @override
   void initState() {
@@ -158,6 +186,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _ticker?.cancel();
+    _presenceTimer?.cancel();
     _cameraController?.dispose();
     _nrpController.dispose();
     _passwordController.dispose();
@@ -325,10 +354,64 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       _currentTab = BodyWornTab.home;
     });
     _showMessage('Login berhasil. Perangkat siap bertugas.');
+    unawaited(_sendPresenceHeartbeat());
+    _presenceTimer?.cancel();
+    _presenceTimer = Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => unawaited(_sendPresenceHeartbeat()),
+    );
+  }
+
+  Future<void> _sendPresenceHeartbeat() async {
+    final session = _session;
+    if (session == null) return;
+
+    Position? position;
+    try {
+      position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 5),
+        ),
+      );
+    } catch (_) {}
+
+    if (mounted) {
+      setState(() {
+        _currentLat = position?.latitude;
+        _currentLng = position?.longitude;
+      });
+    }
+
+    try {
+      final config = AppConfig.fromEnvironment();
+      final client = ApiClient(
+        baseUrl: config.rootUrl,
+        timeout: Duration(seconds: config.connectTimeoutSeconds),
+      );
+      await client.postJson('/presence/heartbeat', {
+        'username': session.nrp,
+        'deviceId': 'android_${session.nrp}',
+        'status': _isRecording ? 'recording' : 'online',
+        'activeChannelId': _selectedPttChannelId,
+        'clientTimeIso': DateTime.now().toUtc().toIso8601String(),
+        if (position != null) 'latitude': position.latitude,
+        if (position != null) 'longitude': position.longitude,
+      });
+
+      final raw = await client.getJson('/presence');
+      if (raw is List && mounted) {
+        final entries = raw
+            .map((item) => PresenceEntry.fromJson(item as Map<String, dynamic>))
+            .toList();
+        setState(() => _presenceEntries = entries);
+      }
+    } catch (_) {}
   }
 
   void _logout() {
     _ticker?.cancel();
+    _presenceTimer?.cancel();
     _cameraController?.dispose();
     setState(() {
       _session = null;
@@ -338,6 +421,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       _isMuted = false;
       _cameraController = null;
       _cameraError = null;
+      _presenceEntries = const [];
+      _currentLat = null;
+      _currentLng = null;
     });
   }
 
@@ -673,8 +759,12 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       case BodyWornTab.map:
         return MapTab(
           team: _patrolTeam,
-          coordinateLabel:
-              'Lat -6.2088, Lng 106.8456 - GPS aktif (+/-4m)',
+          onlineOfficers: _presenceEntries,
+          currentLat: _currentLat,
+          currentLng: _currentLng,
+          coordinateLabel: _currentLat != null
+              ? 'Lat ${_currentLat!.toStringAsFixed(4)}, Lng ${_currentLng!.toStringAsFixed(4)} · GPS aktif'
+              : 'Menunggu sinyal GPS...',
           onChat: (personnel) =>
               _showMessage('Chat ke ${personnel.name} dibuka.'),
           onSos: (personnel) =>
