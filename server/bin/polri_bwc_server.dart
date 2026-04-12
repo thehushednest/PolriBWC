@@ -5,6 +5,16 @@ import 'dart:io';
 const _defaultHost = '0.0.0.0';
 const _defaultPort = 8787;
 
+// Resolusi path data/ relatif terhadap lokasi file script ini,
+// sehingga server bisa dijalankan dari direktori manapun.
+// Mengembalikan path ke file di dalam direktori data/ server,
+// atau direktori data/ itu sendiri jika filename kosong.
+String _dataPath([String filename = '']) {
+  final scriptDir = File(Platform.script.toFilePath()).parent.parent;
+  final base = '${scriptDir.path}/data';
+  return filename.isEmpty ? base : '$base/$filename';
+}
+
 Future<void> main(List<String> args) async {
   final options = _ServerOptions.fromArgs(args);
   final store = await LocalServerStore.load();
@@ -51,7 +61,7 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
 
   try {
     if (method == 'GET' && path == '/dashboard') {
-      final htmlFile = File('server/data/dashboard.html');
+      final htmlFile = File(_dataPath('dashboard.html'));
       if (!await htmlFile.exists()) {
         response.statusCode = HttpStatus.notFound;
         response.write('Dashboard file not found');
@@ -522,7 +532,7 @@ class LocalServerStore {
   LocalServerState state;
 
   static Future<LocalServerStore> load() async {
-    final dir = Directory('server/data');
+    final dir = Directory(_dataPath(''));
     if (!await dir.exists()) {
       await dir.create(recursive: true);
     }
