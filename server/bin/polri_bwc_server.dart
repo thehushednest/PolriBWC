@@ -58,6 +58,30 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
       });
     }
 
+    if (method == 'POST' && path == '/api/v1/auth/login') {
+      final body = await _readJson(request);
+      final username = (body['username'] as String? ?? '').trim();
+      final password = (body['password'] as String? ?? '').trim();
+      if (username.isEmpty || password.isEmpty) {
+        response.statusCode = HttpStatus.badRequest;
+        return _writeJson(response, {'error': 'username dan password wajib diisi'});
+      }
+      final user = store.state.users[username];
+      if (user == null || (user['password'] as String? ?? '') != password) {
+        response.statusCode = HttpStatus.unauthorized;
+        return _writeJson(response, {'error': 'Username atau password salah'});
+      }
+      stdout.writeln('[${_clockNow()}][auth] login berhasil: $username');
+      return _writeJson(response, {
+        'officerName': user['officerName'],
+        'rankLabel': user['rankLabel'],
+        'unitName': user['unitName'],
+        'shiftLabel': user['shiftLabel'],
+        'shiftWindow': user['shiftWindow'],
+        'nrp': user['nrp'] ?? username,
+      });
+    }
+
     if (method == 'GET' && path == '/api/v1/presence') {
       final channelId = request.uri.queryParameters['channelId'] ?? '';
       final items = _resolvedPresenceEntries(store, channelId: channelId);
@@ -498,6 +522,7 @@ class LocalServerStore {
 
 class LocalServerState {
   const LocalServerState({
+    required this.users,
     required this.chatThreads,
     required this.reports,
     required this.recordings,
@@ -508,6 +533,7 @@ class LocalServerState {
     required this.activePttSessions,
   });
 
+  final Map<String, Map<String, dynamic>> users;
   final Map<String, List<Map<String, dynamic>>> chatThreads;
   final List<Map<String, dynamic>> reports;
   final List<Map<String, dynamic>> recordings;
@@ -519,6 +545,38 @@ class LocalServerState {
 
   factory LocalServerState.seed() {
     return LocalServerState(
+      users: const {
+        'test1': {
+          'username': 'test1',
+          'password': 'test1',
+          'officerName': 'Test Satu',
+          'rankLabel': 'Bripda',
+          'unitName': 'Satuan Alpha',
+          'shiftLabel': 'Shift Pagi Aktif',
+          'shiftWindow': '07:00–15:00',
+          'nrp': 'test1',
+        },
+        'test2': {
+          'username': 'test2',
+          'password': 'test2',
+          'officerName': 'Test Dua',
+          'rankLabel': 'Briptu',
+          'unitName': 'Satuan Bravo',
+          'shiftLabel': 'Shift Siang Aktif',
+          'shiftWindow': '15:00–23:00',
+          'nrp': 'test2',
+        },
+        'test3': {
+          'username': 'test3',
+          'password': 'test3',
+          'officerName': 'Test Tiga',
+          'rankLabel': 'Ipda',
+          'unitName': 'Satuan Charlie',
+          'shiftLabel': 'Shift Malam Aktif',
+          'shiftWindow': '23:00–07:00',
+          'nrp': 'test3',
+        },
+      },
       chatThreads: const {},
       reports: const [],
       recordings: const [],
@@ -537,6 +595,9 @@ class LocalServerState {
 
   factory LocalServerState.fromJson(Map<String, dynamic> json) {
     return LocalServerState(
+      users: (json['users'] as Map<String, dynamic>? ?? {}).map(
+        (key, value) => MapEntry(key, Map<String, dynamic>.from(value as Map)),
+      ),
       chatThreads: (json['chatThreads'] as Map<String, dynamic>? ?? {}).map(
         (key, value) => MapEntry(
           key,
@@ -588,6 +649,7 @@ class LocalServerState {
   }
 
   LocalServerState copyWith({
+    Map<String, Map<String, dynamic>>? users,
     Map<String, List<Map<String, dynamic>>>? chatThreads,
     List<Map<String, dynamic>>? reports,
     List<Map<String, dynamic>>? recordings,
@@ -598,6 +660,7 @@ class LocalServerState {
     Map<String, Map<String, dynamic>>? activePttSessions,
   }) {
     return LocalServerState(
+      users: users ?? this.users,
       chatThreads: chatThreads ?? this.chatThreads,
       reports: reports ?? this.reports,
       recordings: recordings ?? this.recordings,
@@ -611,6 +674,7 @@ class LocalServerState {
 
   Map<String, dynamic> toJson() {
     return {
+      'users': users,
       'chatThreads': chatThreads,
       'reports': reports,
       'recordings': recordings,

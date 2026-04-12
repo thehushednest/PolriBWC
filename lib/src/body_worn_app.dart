@@ -8,6 +8,8 @@ import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import 'api_client.dart';
+import 'app_config.dart';
 import 'models.dart';
 import 'navigation.dart';
 import 'storage.dart';
@@ -100,12 +102,8 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   final RecordingStorage _storage = RecordingStorage();
   final DateFormat _fullDateFormat = DateFormat('dd MMM yyyy HH:mm');
   final DateFormat _compactTimeFormat = DateFormat('HH:mm');
-  final TextEditingController _nrpController = TextEditingController(
-    text: '88122344',
-  );
-  final TextEditingController _passwordController = TextEditingController(
-    text: '12345678',
-  );
+  final TextEditingController _nrpController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _descriptionController = TextEditingController();
   final TextEditingController _witnessController = TextEditingController();
   final TextEditingController _searchController = TextEditingController();
@@ -147,32 +145,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     'Lainnya',
   ];
 
-  final List<PersonnelStatus> _patrolTeam = const [
-    PersonnelStatus(
-      initials: 'AS',
-      name: 'Bripda A. Susilo',
-      detail: 'Jl. Thamrin - Rekam aktif',
-      status: 'Rec',
-      statusColor: Color(0xFF19A66A),
-      dotColor: Color(0xFF1BA467),
-    ),
-    PersonnelStatus(
-      initials: 'BW',
-      name: 'Briptu B. Wahyu',
-      detail: 'Pasar Baru - Patroli',
-      status: 'Standby',
-      statusColor: Color(0xFF4A88E6),
-      dotColor: Color(0xFF19A66A),
-    ),
-    PersonnelStatus(
-      initials: 'DK',
-      name: 'Ipda D. Kurniawan',
-      detail: 'Gambir - Sinyal lemah',
-      status: 'Weak',
-      statusColor: Color(0xFFE5A126),
-      dotColor: Color(0xFFE89A1B),
-    ),
-  ];
+  final List<PersonnelStatus> _patrolTeam = const [];
 
   @override
   void initState() {
@@ -217,11 +190,6 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
 
     final stored = await _storage.loadRecordings();
     final combined = [...stored];
-    for (final entry in _seedRecordings()) {
-      if (!combined.any((item) => item.id == entry.id)) {
-        combined.add(entry);
-      }
-    }
     combined.sort(
       (a, b) => DateTime.parse(
         b.recordedAtIso,
@@ -289,24 +257,74 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     }
   }
 
+  // Kredensial fallback untuk digunakan saat server tidak tersedia.
+  static const _localUsers = {
+    'test1': (name: 'Test Satu', rank: 'Bripda', unit: 'Satuan Alpha', shift: 'Shift Pagi Aktif', window: '07:00–15:00', pass: 'test1'),
+    'test2': (name: 'Test Dua', rank: 'Briptu', unit: 'Satuan Bravo', shift: 'Shift Siang Aktif', window: '15:00–23:00', pass: 'test2'),
+    'test3': (name: 'Test Tiga', rank: 'Ipda', unit: 'Satuan Charlie', shift: 'Shift Malam Aktif', window: '23:00–07:00', pass: 'test3'),
+  };
+
   Future<void> _activateSession() async {
-    if (_nrpController.text.trim().isEmpty ||
-        _passwordController.text.trim().isEmpty) {
-      _showMessage('NRP dan sandi wajib diisi.');
+    final username = _nrpController.text.trim();
+    final password = _passwordController.text.trim();
+    if (username.isEmpty || password.isEmpty) {
+      _showMessage('Username dan sandi wajib diisi.');
       return;
     }
-    setState(() {
-      _session = OfficerSession(
-        officerName: 'R. Santoso',
-        rankLabel: 'Bripda',
-        unitName: 'Polda Metro Jaya',
-        shiftLabel: 'Shift Pagi Aktif',
-        shiftWindow: '07:00-15:00 - j-22m',
-        nrp: _nrpController.text.trim(),
+
+    OfficerSession? session;
+
+    // Coba autentikasi ke server lokal.
+    try {
+      final config = AppConfig.fromEnvironment();
+      final client = ApiClient(
+        baseUrl: config.rootUrl,
+        timeout: Duration(seconds: config.connectTimeoutSeconds),
       );
+      final result = await client.postJsonWithStatus(
+        '/auth/login',
+        {'username': username, 'password': password},
+      );
+      if (result.statusCode == 200) {
+        final body = result.body as Map<String, dynamic>;
+        session = OfficerSession(
+          officerName: body['officerName'] as String? ?? username,
+          rankLabel: body['rankLabel'] as String? ?? '',
+          unitName: body['unitName'] as String? ?? '',
+          shiftLabel: body['shiftLabel'] as String? ?? '',
+          shiftWindow: body['shiftWindow'] as String? ?? '',
+          nrp: body['nrp'] as String? ?? username,
+        );
+      } else if (result.statusCode == 401) {
+        _showMessage('Username atau password salah.');
+        return;
+      }
+    } catch (_) {
+      // Server tidak tersedia — gunakan fallback lokal.
+    }
+
+    // Fallback: validasi terhadap kredensial lokal.
+    if (session == null) {
+      final local = _localUsers[username];
+      if (local == null || local.pass != password) {
+        _showMessage('Username atau password salah.');
+        return;
+      }
+      session = OfficerSession(
+        officerName: local.name,
+        rankLabel: local.rank,
+        unitName: local.unit,
+        shiftLabel: local.shift,
+        shiftWindow: local.window,
+        nrp: username,
+      );
+    }
+
+    setState(() {
+      _session = session;
       _currentTab = BodyWornTab.home;
     });
-    _showMessage('Login berhasil. Perangkat terdaftar MDM siap bertugas.');
+    _showMessage('Login berhasil. Perangkat siap bertugas.');
   }
 
   void _logout() {
@@ -711,66 +729,6 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
           onSubmit: _submitIncidentReport,
         );
     }
-  }
-
-  List<RecordingEntry> _seedRecordings() {
-    final now = DateTime.now();
-    return [
-      RecordingEntry(
-        id: 'REC_20260402_091233',
-        officerName: 'Bripda R. Santoso',
-        unitName: 'Polda Metro Jaya',
-        recordedAtIso: now
-            .subtract(const Duration(minutes: 29))
-            .toIso8601String(),
-        filePath: 'mock/REC_20260402_091233.mp4',
-        latitude: -6.2088,
-        longitude: 106.8456,
-        source: 'DEVICE_CAMERA_INTENT',
-        notes: 'Jl. Jend. Sudirman - 31 detik',
-        status: RecordingUploadStatus.uploaded,
-        durationSeconds: 31,
-        sizeBytes: 4 * 1024 * 1024,
-        locationLabel: 'Jl. Jend. Sudirman, Jakpus',
-        tagLabel: 'Penangkapan',
-      ),
-      RecordingEntry(
-        id: 'REC_20260402_082847',
-        officerName: 'Bripda R. Santoso',
-        unitName: 'Polda Metro Jaya',
-        recordedAtIso: now
-            .subtract(const Duration(hours: 1, minutes: 13))
-            .toIso8601String(),
-        filePath: 'mock/REC_20260402_082847.mp4',
-        latitude: -6.1700,
-        longitude: 106.8350,
-        source: 'DEVICE_CAMERA_INTENT',
-        notes: 'Pasar Baru - 2 menit 10 detik',
-        status: RecordingUploadStatus.pending,
-        durationSeconds: 130,
-        sizeBytes: 41 * 1024 * 1024,
-        locationLabel: 'Pasar Baru',
-        tagLabel: 'Razia',
-      ),
-      RecordingEntry(
-        id: 'REC_20260401_153012',
-        officerName: 'Bripda R. Santoso',
-        unitName: 'Polda Metro Jaya',
-        recordedAtIso: now
-            .subtract(const Duration(days: 1, hours: 2))
-            .toIso8601String(),
-        filePath: 'mock/REC_20260401_153012.mp4',
-        latitude: -6.1754,
-        longitude: 106.8272,
-        source: 'DEVICE_CAMERA_INTENT',
-        notes: 'Monas - 8 menit 47 detik',
-        status: RecordingUploadStatus.uploaded,
-        durationSeconds: 527,
-        sizeBytes: 203 * 1024 * 1024,
-        locationLabel: 'Monas',
-        tagLabel: 'Patroli',
-      ),
-    ];
   }
 
   Widget? _buildCameraPreview() {
