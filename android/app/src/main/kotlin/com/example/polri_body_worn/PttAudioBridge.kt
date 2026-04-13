@@ -13,37 +13,36 @@ import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import android.os.Build
 import android.util.Base64
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.BufferedWriter
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.net.InetSocketAddress
-import java.net.Socket
 import java.util.Timer
 import java.util.TimerTask
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class PttAudioBridge(
     private val context: Context,
 ) {
     private val ioExecutor = Executors.newSingleThreadExecutor()
-    private var socket: Socket? = null
-    private var writer: BufferedWriter? = null
-    private var readerThread: Thread? = null
+    private val httpClient = OkHttpClient.Builder()
+        .pingInterval(5, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
+
+    private var webSocket: WebSocket? = null
     private var recorderThread: Thread? = null
+    private var reconnectTimer: Timer? = null
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
-    private var pingTimer: Timer? = null
-    private var reconnectTimer: Timer? = null
     private var isManualDisconnect = false
 
     @Volatile
-    private var host: String = ""
-
-    @Volatile
-    private var port: Int = 8788
+    private var socketUrl: String = ""
 
     @Volatile
     private var username: String = ""
@@ -53,6 +52,9 @@ class PttAudioBridge(
 
     @Volatile
     private var deviceId: String = ""
+
+    @Volatile
+    private var isSocketOpen = false
 
     private val isCapturing = AtomicBoolean(false)
     private val isConnecting = AtomicBoolean(false)
@@ -64,27 +66,25 @@ class PttAudioBridge(
     private val frameBytes = 640
 
     fun connect(
-        host: String,
-        port: Int,
+        url: String,
         username: String,
         channelId: String,
         deviceId: String,
     ) {
-        this.host = host
-        this.port = port
+        socketUrl = url
         this.username = username
         this.channelId = channelId
         this.deviceId = deviceId
         isManualDisconnect = false
         configureAudioRouting()
-        _connectInternal()
+        connectInternal()
     }
 
     fun updateChannel(channelId: String) {
         this.channelId = channelId
         ioExecutor.execute {
-            if (socket == null || socket?.isClosed == true) {
-                _connectInternal()
+            if (!isSocketOpen) {
+                connectInternal()
             } else {
                 sendJson(
                     mapOf(
@@ -102,7 +102,7 @@ class PttAudioBridge(
         if (isCapturing.get()) return
         isCapturing.set(true)
         configureAudioRouting()
-        _connectInternal()
+        connectInternal()
 
         val minBuffer = AudioRecord.getMinBufferSize(sampleRate, channelInConfig, audioEncoding)
         if (minBuffer <= 0) {
@@ -124,8 +124,8 @@ class PttAudioBridge(
         recorderThread = Thread {
             val readBuffer = ByteArray(frameBytes)
             while (isCapturing.get()) {
-                if (socket == null || socket?.isClosed == true) {
-                    _connectInternal()
+                if (!isSocketOpen) {
+                    connectInternal()
                     Thread.sleep(80)
                     continue
                 }
@@ -172,77 +172,72 @@ class PttAudioBridge(
     fun disconnect() {
         isManualDisconnect = true
         stopTalking()
-        stopPing()
         stopReconnect()
         closeSocketOnly()
         releasePlayback()
         resetAudioRouting()
     }
 
-    private fun _connectInternal() {
-        if (host.isBlank() || isConnecting.get() || (socket != null && socket?.isClosed == false)) {
-            return
-        }
+    private fun connectInternal() {
+        if (socketUrl.isBlank() || isConnecting.get() || isSocketOpen) return
         isConnecting.set(true)
         ioExecutor.execute {
             try {
                 closeSocketOnly()
-                val newSocket = Socket()
-                newSocket.connect(InetSocketAddress(host, port), 2500)
-                newSocket.tcpNoDelay = true
-                newSocket.keepAlive = true
-                socket = newSocket
-                writer = BufferedWriter(OutputStreamWriter(newSocket.getOutputStream(), Charsets.UTF_8))
-                configureAudioRouting()
-                ensureAudioTrack()
-                sendJson(
-                    mapOf(
-                        "type" to "hello",
-                        "username" to username,
-                        "channelId" to channelId,
-                        "deviceId" to deviceId,
-                    ),
-                )
-                startPing()
-                stopReconnect()
-                startReader(newSocket)
+                val request = Request.Builder().url(socketUrl).build()
+                httpClient.newWebSocket(request, object : WebSocketListener() {
+                    override fun onOpen(webSocket: WebSocket, response: Response) {
+                        this@PttAudioBridge.webSocket = webSocket
+                        isSocketOpen = true
+                        isConnecting.set(false)
+                        stopReconnect()
+                        configureAudioRouting()
+                        ensureAudioTrack()
+                        sendJson(
+                            mapOf(
+                                "type" to "hello",
+                                "username" to username,
+                                "channelId" to channelId,
+                                "deviceId" to deviceId,
+                            ),
+                        )
+                    }
+
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        handleIncoming(text)
+                    }
+
+                    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                        isSocketOpen = false
+                        isConnecting.set(false)
+                        closeSocketOnly()
+                        if (!isManualDisconnect) {
+                            scheduleReconnect()
+                        }
+                    }
+
+                    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                        isSocketOpen = false
+                        closeSocketOnly()
+                        if (!isManualDisconnect) {
+                            scheduleReconnect()
+                        }
+                    }
+                })
             } catch (_: Exception) {
-                closeSocketOnly()
-                if (!isManualDisconnect) {
-                    scheduleReconnect()
-                }
-            } finally {
+                isSocketOpen = false
                 isConnecting.set(false)
-            }
-        }
-    }
-
-    private fun startReader(currentSocket: Socket) {
-        readerThread?.interrupt()
-        readerThread = Thread {
-            try {
-                val reader = BufferedReader(InputStreamReader(currentSocket.getInputStream(), Charsets.UTF_8))
-                while (!Thread.currentThread().isInterrupted) {
-                    val line = reader.readLine() ?: break
-                    handleIncoming(line)
-                }
-            } catch (_: Exception) {
-            } finally {
                 closeSocketOnly()
-                stopPing()
                 if (!isManualDisconnect) {
                     scheduleReconnect()
                 }
             }
-        }.apply {
-            name = "polri-bwc-ptt-reader"
-            start()
         }
     }
 
-    private fun handleIncoming(line: String) {
+    private fun handleIncoming(text: String) {
         try {
-            val json = JSONObject(line)
+            val json = JSONObject(text)
             when (json.optString("type")) {
                 "audio" -> {
                     val from = json.optString("username")
@@ -254,7 +249,7 @@ class PttAudioBridge(
                     ensureAudioTrack()
                     audioTrack?.write(bytes, 0, bytes.size)
                 }
-                "ping" -> Unit
+                "ping", "ack" -> Unit
             }
         } catch (_: Exception) {
         }
@@ -353,42 +348,14 @@ class PttAudioBridge(
         }
     }
 
-    private fun startPing() {
-        stopPing()
-        pingTimer = Timer("polri-bwc-ptt-ping", true).apply {
-            scheduleAtFixedRate(
-                object : TimerTask() {
-                    override fun run() {
-                        ioExecutor.execute {
-                            sendJson(
-                                mapOf(
-                                    "type" to "ping",
-                                    "username" to username,
-                                    "channelId" to channelId,
-                                ),
-                            )
-                        }
-                    }
-                },
-                3000,
-                5000,
-            )
-        }
-    }
-
-    private fun stopPing() {
-        pingTimer?.cancel()
-        pingTimer = null
-    }
-
     private fun scheduleReconnect() {
-        if (isManualDisconnect || reconnectTimer != null || host.isBlank()) return
+        if (isManualDisconnect || reconnectTimer != null || socketUrl.isBlank()) return
         reconnectTimer = Timer("polri-bwc-ptt-reconnect", true).apply {
             schedule(
                 object : TimerTask() {
                     override fun run() {
                         reconnectTimer = null
-                        _connectInternal()
+                        connectInternal()
                     }
                 },
                 1500,
@@ -412,11 +379,9 @@ class PttAudioBridge(
     }
 
     private fun sendJson(payload: Map<String, Any>) {
-        val currentWriter = writer ?: return
+        val currentSocket = webSocket ?: return
         try {
-            currentWriter.write(JSONObject(payload).toString())
-            currentWriter.newLine()
-            currentWriter.flush()
+            currentSocket.send(JSONObject(payload).toString())
         } catch (_: Exception) {
             closeSocketOnly()
             if (!isManualDisconnect) {
@@ -427,14 +392,10 @@ class PttAudioBridge(
 
     private fun closeSocketOnly() {
         try {
-            writer?.close()
+            webSocket?.close(1000, "normal")
         } catch (_: Exception) {
         }
-        writer = null
-        try {
-            socket?.close()
-        } catch (_: Exception) {
-        }
-        socket = null
+        webSocket = null
+        isSocketOpen = false
     }
 }

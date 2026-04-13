@@ -433,6 +433,10 @@ class LiveStreamSession {
     this.lastFrameAtIso = '',
     this.frameDataUrl = '',
     this.frameCount = 0,
+    this.transport = 'snapshot',
+    this.signalingUrl = '',
+    this.viewerUrl = '',
+    this.signalingState = 'idle',
   });
 
   final String sessionId;
@@ -448,6 +452,10 @@ class LiveStreamSession {
   final String lastFrameAtIso;
   final String frameDataUrl;
   final int frameCount;
+  final String transport;
+  final String signalingUrl;
+  final String viewerUrl;
+  final String signalingState;
 
   factory LiveStreamSession.fromJson(Map<String, dynamic> json) {
     return LiveStreamSession(
@@ -464,6 +472,10 @@ class LiveStreamSession {
       lastFrameAtIso: json['lastFrameAtIso'] as String? ?? '',
       frameDataUrl: json['frameDataUrl'] as String? ?? '',
       frameCount: json['frameCount'] as int? ?? 0,
+      transport: json['transport'] as String? ?? 'snapshot',
+      signalingUrl: json['signalingUrl'] as String? ?? '',
+      viewerUrl: json['viewerUrl'] as String? ?? '',
+      signalingState: json['signalingState'] as String? ?? 'idle',
     );
   }
 }

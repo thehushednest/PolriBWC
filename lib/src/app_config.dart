@@ -3,6 +3,7 @@ class AppConfig {
     required this.apiBaseUrl,
     required this.apiVersion,
     required this.useMockBackend,
+    required this.enableNativePttAudio,
     required this.connectTimeoutSeconds,
     required this.pttAudioPort,
   });
@@ -10,6 +11,7 @@ class AppConfig {
   final String apiBaseUrl;
   final String apiVersion;
   final bool useMockBackend;
+  final bool enableNativePttAudio;
   final int connectTimeoutSeconds;
   final int pttAudioPort;
 
@@ -17,7 +19,7 @@ class AppConfig {
     return AppConfig(
       apiBaseUrl: const String.fromEnvironment(
         'POLRI_BWC_API_BASE_URL',
-        defaultValue: 'http://192.168.1.39:8787',
+        defaultValue: 'https://asksenopati.com/polribwc',
       ),
       apiVersion: const String.fromEnvironment(
         'POLRI_BWC_API_VERSION',
@@ -27,6 +29,12 @@ class AppConfig {
           const String.fromEnvironment(
             'POLRI_BWC_USE_MOCK',
             defaultValue: 'false',
+          ) ==
+          'true',
+      enableNativePttAudio:
+          const String.fromEnvironment(
+            'POLRI_BWC_ENABLE_NATIVE_PTT_AUDIO',
+            defaultValue: 'true',
           ) ==
           'true',
       connectTimeoutSeconds:
@@ -51,6 +59,36 @@ class AppConfig {
   String get rootUrl =>
       '${apiBaseUrl.replaceAll(RegExp(r'/$'), '')}/api/$apiVersion';
   String get apiHost => Uri.parse(apiBaseUrl).host;
+  String get pttWebSocketUrl {
+    final base = apiBaseUrl.replaceAll(RegExp(r'/$'), '');
+    final uri = Uri.parse(base);
+    final scheme = uri.scheme == 'https' ? 'wss' : 'ws';
+    final trimmedPath = uri.path.endsWith('/')
+        ? uri.path.substring(0, uri.path.length - 1)
+        : uri.path;
+    final wsPath = '${trimmedPath.isEmpty ? '' : trimmedPath}/ws/ptt';
+    return Uri(
+      scheme: scheme,
+      host: uri.host,
+      port: uri.hasPort ? uri.port : null,
+      path: wsPath,
+    ).toString();
+  }
+  String get liveSignalingWebSocketUrl {
+    final base = apiBaseUrl.replaceAll(RegExp(r'/$'), '');
+    final uri = Uri.parse(base);
+    final scheme = uri.scheme == 'https' ? 'wss' : 'ws';
+    final trimmedPath = uri.path.endsWith('/')
+        ? uri.path.substring(0, uri.path.length - 1)
+        : uri.path;
+    final wsPath = '${trimmedPath.isEmpty ? '' : trimmedPath}/api/$apiVersion/live/ws';
+    return Uri(
+      scheme: scheme,
+      host: uri.host,
+      port: uri.hasPort ? uri.port : null,
+      path: wsPath,
+    ).toString();
+  }
   String get chatsEndpoint => '$rootUrl/chats';
   String get reportsEndpoint => '$rootUrl/reports';
   String get recordingsEndpoint => '$rootUrl/recordings';

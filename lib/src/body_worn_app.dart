@@ -14,6 +14,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'api_client.dart';
 import 'app_config.dart';
 import 'backend_gateway.dart';
+import 'live_frame_encoder.dart';
 import 'models.dart';
 import 'navigation.dart';
 import 'polri_backend_api.dart';
@@ -104,7 +105,7 @@ class BodyWornHomePage extends StatefulWidget {
 
 class _BodyWornHomePageState extends State<BodyWornHomePage>
     with WidgetsBindingObserver {
-  static const Duration _liveFrameInterval = Duration(seconds: 3);
+  static const Duration _liveFrameInterval = Duration(seconds: 1);
   static const int _liveFrameWarmupMs = 1200;
   final RecordingStorage _storage = RecordingStorage();
   final DateFormat _fullDateFormat = DateFormat('dd MMM yyyy HH:mm');
@@ -131,7 +132,6 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   Timer? _presenceTimer;
   Timer? _pttRefreshTimer;
   Timer? _sosPollTimer;
-  Timer? _liveFrameTimer;
   Timer? _liveRefreshTimer;
   String _selectedGalleryFilter = 'Semua';
   String _selectedReportType = 'Penangkapan';
@@ -157,8 +157,13 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   String? _activeSosDialogId;
   String? _activeLiveSessionId;
   bool _isSendingLiveFrame = false;
+  bool _isLiveImageStreamActive = false;
+  DateTime? _lastLiveFrameSentAt;
   int _liveFrameCount = 0;
   String _liveFrameStatus = 'Belum ada frame live';
+  String _liveTransportMode = 'snapshot';
+  String _liveSignalingStatus = 'Signaling belum aktif';
+  late final AppConfig _config;
   late final BackendGateway _backend;
 
   static const _kDeviceChannel = MethodChannel('polri_bwc/device');
@@ -212,7 +217,8 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   @override
   void initState() {
     super.initState();
-    _backend = PolriBackendApi(config: AppConfig.fromEnvironment());
+    _config = AppConfig.fromEnvironment();
+    _backend = PolriBackendApi(config: _config);
     WidgetsBinding.instance.addObserver(this);
     _initialize();
     // Proximity sensor dinonaktifkan sementara.
@@ -390,13 +396,122 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     setState(() {
       if (activeSession != null) {
         _liveFrameCount = activeSession.frameCount;
+        _liveTransportMode = activeSession.transport;
+        if (activeSession.signalingState.isNotEmpty &&
+            activeSession.signalingState != 'idle') {
+          _liveSignalingStatus = 'Signaling ${activeSession.signalingState}';
+        }
         _liveFrameStatus = activeSession.frameCount == 0
             ? 'Menunggu frame live...'
-            : 'Frame ${activeSession.frameCount} Â· ${_compactTimeFormat.format(DateTime.tryParse(activeSession.lastFrameAtIso)?.toLocal() ?? DateTime.now())}';
+            : 'Frame ${activeSession.frameCount} · ${_compactTimeFormat.format(DateTime.tryParse(activeSession.lastFrameAtIso)?.toLocal() ?? DateTime.now())}';
       }
     });
   }
 
+  Future<void> _connectLiveSignaling(LiveStreamSession liveSession) async {
+    await _disconnectLiveSignaling();
+    if (!mounted) return;
+    setState(() {
+      _liveTransportMode = liveSession.transport;
+      _liveSignalingStatus =
+          liveSession.transport == 'webrtc'
+              ? 'Server siap realtime push dashboard.'
+              : 'Fallback snapshot aktif.';
+    });
+  }
+
+  Future<void> _disconnectLiveSignaling() async {
+    if (!mounted) return;
+    setState(() {
+      _liveSignalingStatus = 'Signaling belum aktif';
+    });
+  }
+
+  Future<void> _startLiveImageStream() async {
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) return;
+    if (_isLiveImageStreamActive) return;
+    _lastLiveFrameSentAt = null;
+    await controller.startImageStream((image) {
+      if (!_isRecording) return;
+      if (_isSendingLiveFrame) return;
+      final lastSent = _lastLiveFrameSentAt;
+      final now = DateTime.now();
+      if (lastSent != null && now.difference(lastSent) < _liveFrameInterval) {
+        return;
+      }
+      _lastLiveFrameSentAt = now;
+      unawaited(_pushLiveCameraImage(image));
+    });
+    _isLiveImageStreamActive = true;
+  }
+
+  Future<void> _stopLiveImageStream() async {
+    final controller = _cameraController;
+    if (controller == null) {
+      _isLiveImageStreamActive = false;
+      return;
+    }
+    if (controller.value.isStreamingImages) {
+      try {
+        await controller.stopImageStream();
+      } catch (_) {}
+    }
+    _isLiveImageStreamActive = false;
+    _lastLiveFrameSentAt = null;
+  }
+
+  Future<void> _pushLiveCameraImage(CameraImage image) async {
+    final session = _session;
+    final liveSessionId = _activeLiveSessionId;
+    if (!_isRecording || _isSendingLiveFrame || session == null || liveSessionId == null) {
+      return;
+    }
+
+    _isSendingLiveFrame = true;
+    try {
+      if (mounted) {
+        setState(() {
+          _liveFrameStatus = _liveFrameCount == 0
+              ? 'Mengambil frame pertama mode stream...'
+              : 'Mengirim frame ${_liveFrameCount + 1} mode stream...';
+        });
+      }
+      final encoded = encodeLiveCameraImage(image, jpegQuality: 48);
+      if (encoded == null || encoded.isEmpty) {
+        throw Exception('Frame stream tidak dapat diencode');
+      }
+      final dataUrl = 'data:image/jpeg;base64,${base64Encode(encoded)}';
+      await _backend.pushLiveFrame(
+        sessionId: liveSessionId,
+        officerId: session.nrp,
+        frameDataUrl: dataUrl,
+        latitude: _currentLat,
+        longitude: _currentLng,
+        locationLabel: _currentLat == null
+            ? 'Lokasi belum tersedia'
+            : 'Lat ${_currentLat!.toStringAsFixed(4)}, Lng ${_currentLng!.toStringAsFixed(4)}',
+      );
+      if (mounted) {
+        setState(() {
+          _liveFrameCount += 1;
+          _liveFrameStatus =
+              'Frame $_liveFrameCount terkirim · stream ${_liveFrameInterval.inSeconds}dt · ${_compactTimeFormat.format(DateTime.now())}';
+        });
+      }
+      if (_liveFrameCount <= 1) {
+        await _refreshLiveSessions();
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _liveFrameStatus = 'Frame stream gagal: $error';
+        });
+      }
+    } finally {
+      _isSendingLiveFrame = false;
+    }
+  }
   void _startSosPolling() {
     _sosPollTimer?.cancel();
     _sosPollTimer = Timer.periodic(
@@ -489,10 +604,13 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
 
   Future<void> _connectNativePtt(OfficerSession session) async {
     try {
-      final config = AppConfig.fromEnvironment();
+      final config = _config;
+      if (!config.enableNativePttAudio) {
+        if (mounted) setState(() => _isPttConnected = false);
+        return;
+      }
       await _kDeviceChannel.invokeMethod('configurePttAudio', {
-        'host': config.apiHost,
-        'port': config.pttAudioPort,
+        'url': config.pttWebSocketUrl,
         'username': session.nrp,
         'channelId': _selectedPttChannelId,
         'deviceId': 'android_${session.nrp}',
@@ -575,15 +693,22 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       return;
     }
 
+    final shouldResumeStream = _isRecording && controller.value.isStreamingImages;
+    if (shouldResumeStream) {
+      unawaited(_stopLiveImageStream());
+    }
     try {
       final captured = await controller.takePicture();
       final storedPath = await _storage.persistPhoto(captured);
       _showMessage('Snapshot tersimpan di $storedPath');
     } catch (error) {
       _showMessage('Gagal mengambil snapshot: $error');
+    } finally {
+      if (shouldResumeStream && _isRecording) {
+        await _startLiveImageStream();
+      }
     }
   }
-
   Future<void> _updateNotification() async {
     final activeChannelId = _pttTalkingChannelId ?? _selectedPttChannelId;
     final channelLabel = _pttChannels
@@ -609,7 +734,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     _pttRefreshTimer?.cancel();
     _liveRefreshTimer?.cancel();
     _sosPollTimer?.cancel();
-    _liveFrameTimer?.cancel();
+    unawaited(_stopLiveImageStream());
     if (session != null && liveSessionId != null) {
       unawaited(
         _backend.stopLiveStream(
@@ -619,6 +744,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       );
     }
     unawaited(_disconnectNativePtt());
+    unawaited(_disconnectLiveSignaling());
     _cameraController?.dispose();
     _nrpController.dispose();
     _passwordController.dispose();
@@ -640,6 +766,21 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       if (_session != null) {
         unawaited(_connectNativePtt(_session!));
         unawaited(_refreshPttData());
+      }
+      if (_isRecording && _session != null && _activeLiveSessionId != null) {
+        final liveSession = LiveStreamSession(
+          sessionId: _activeLiveSessionId!,
+          officerId: _session!.nrp,
+          officerName: _session!.fullName,
+          deviceId: 'android_${_session!.nrp}',
+          status: 'live',
+          startedAtIso: DateTime.now().toIso8601String(),
+          locationLabel: _currentLat == null ? 'Lokasi belum tersedia' : 'Lat ${_currentLat!.toStringAsFixed(4)}, Lng ${_currentLng!.toStringAsFixed(4)}',
+          channelId: _selectedPttChannelId,
+          transport: 'webrtc',
+          signalingUrl: _config.liveSignalingWebSocketUrl,
+        );
+        unawaited(_connectLiveSignaling(liveSession));
       }
       if (_currentTab == BodyWornTab.record) {
         unawaited(_ensureCameraReady());
@@ -737,7 +878,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
 
       final controller = CameraController(
         _rearCamera!,
-        ResolutionPreset.medium,
+        ResolutionPreset.low,
         enableAudio: true,
         imageFormatGroup: ImageFormatGroup.jpeg,
       );
@@ -789,11 +930,12 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       return;
     }
 
+    final config = _config;
     OfficerSession? session;
+    var serverReachable = false;
 
     // Coba autentikasi ke server lokal.
     try {
-      final config = AppConfig.fromEnvironment();
       final client = ApiClient(
         baseUrl: config.rootUrl,
         timeout: Duration(seconds: config.connectTimeoutSeconds),
@@ -802,6 +944,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         '/auth/login',
         {'username': username, 'password': password},
       );
+      serverReachable = true;
       if (result.statusCode == 200) {
         final body = result.body as Map<String, dynamic>;
         session = OfficerSession(
@@ -818,6 +961,17 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       }
     } catch (_) {
       // Server tidak tersedia â€” gunakan fallback lokal.
+    }
+
+    if (!config.useMockBackend && session == null) {
+      if (serverReachable) {
+        _showMessage('Login ke server gagal. Periksa kredensial atau respons server.');
+      } else {
+        _showMessage(
+          'Tidak dapat terhubung ke server operasional. Pastikan internet dan endpoint aktif.',
+        );
+      }
+      return;
     }
 
     // Fallback: validasi terhadap kredensial lokal.
@@ -940,9 +1094,10 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       );
     }
     unawaited(_disconnectNativePtt());
+    unawaited(_disconnectLiveSignaling());
     _ticker?.cancel();
     _presenceTimer?.cancel();
-    _liveFrameTimer?.cancel();
+    unawaited(_stopLiveImageStream());
     _cameraController?.dispose();
     setState(() {
       _session = null;
@@ -963,7 +1118,11 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       _isProximityNear = false;
       _activeLiveSessionId = null;
       _isSendingLiveFrame = false;
+      _isLiveImageStreamActive = false;
+      _lastLiveFrameSentAt = null;
       _liveFrameCount = 0;
+      _liveTransportMode = 'snapshot';
+      _liveSignalingStatus = 'Signaling belum aktif';
       _liveFrameStatus = 'Belum ada frame live';
       _currentLat = null;
       _currentLng = null;
@@ -1010,6 +1169,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       officerName: session.fullName,
       deviceId: 'android_${session.nrp}',
       channelId: _selectedPttChannelId,
+      preferredTransport: 'webrtc',
+      fallbackTransport: 'snapshot',
+      signalingUrl: _config.liveSignalingWebSocketUrl,
       latitude: location?.latitude,
       longitude: location?.longitude,
       locationLabel: location == null
@@ -1028,30 +1190,27 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       _recordingStartedAt = DateTime.now();
       _activeLiveSessionId = liveSession.sessionId;
       _liveFrameCount = 0;
-      _liveFrameStatus = 'Menghubungkan Live Cam mode hemat...';
+      _liveTransportMode = liveSession.transport;
+      _liveSignalingStatus = 'Menyiapkan signaling WSS...';
+      _liveFrameStatus = 'Menghubungkan Live Cam mode cepat...';
     });
     _syncBlackoutState();
+    await _connectLiveSignaling(liveSession);
     await _sendPresenceHeartbeat();
     await _refreshLiveSessions();
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
-    _liveFrameTimer?.cancel();
-    Future<void>.delayed(
-      const Duration(milliseconds: _liveFrameWarmupMs),
-      () => _pushLiveFrame(),
-    );
-    _liveFrameTimer = Timer.periodic(
-      _liveFrameInterval,
-      (_) => unawaited(_pushLiveFrame()),
-    );
-    _showMessage('Live Cam aktif. Stream dikirim ke dashboard server.');
+    await Future<void>.delayed(const Duration(milliseconds: _liveFrameWarmupMs));
+    await _startLiveImageStream();
+    _showMessage('Live Cam aktif. Stream frame berjalan ke server.');
   }
 
   Future<void> _finishRecordingMode() async {
     if (!_isRecording) return;
     _ticker?.cancel();
-    _liveFrameTimer?.cancel();
+    await _stopLiveImageStream();
+    await _disconnectLiveSignaling();
     try {
       final session = _session;
       final liveSessionId = _activeLiveSessionId;
@@ -1067,6 +1226,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         _isRecording = false;
         _recordingStartedAt = null;
         _activeLiveSessionId = null;
+        _liveSignalingStatus = 'Signaling selesai';
         _liveFrameStatus = 'Live Cam selesai';
       });
       await _sendPresenceHeartbeat();
@@ -1079,75 +1239,12 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         _isRecording = false;
         _recordingStartedAt = null;
         _activeLiveSessionId = null;
+        _liveSignalingStatus = 'Signaling berhenti paksa';
         _liveFrameStatus = 'Live Cam gagal dihentikan';
       });
       await _refreshLiveSessions();
       _syncBlackoutState();
       _showMessage('Gagal menghentikan live stream: $error');
-    }
-  }
-
-  Future<void> _pushLiveFrame() async {
-    final controller = _cameraController;
-    final session = _session;
-    final liveSessionId = _activeLiveSessionId;
-    if (!_isRecording ||
-        _isSendingLiveFrame ||
-        controller == null ||
-        !controller.value.isInitialized ||
-        controller.value.isTakingPicture ||
-        session == null ||
-        liveSessionId == null) {
-      return;
-    }
-
-    _isSendingLiveFrame = true;
-    try {
-      if (mounted) {
-        setState(() {
-          _liveFrameStatus = _liveFrameCount == 0
-              ? 'Mengambil frame pertama mode hemat...'
-              : 'Mengirim frame ${_liveFrameCount + 1} mode hemat...';
-        });
-      }
-      final captured = await controller.takePicture();
-      final bytes = await captured.readAsBytes();
-      if (bytes.isEmpty) {
-        throw Exception('Frame kamera kosong');
-      }
-      final dataUrl = 'data:image/jpeg;base64,${base64Encode(bytes)}';
-      final file = File(captured.path);
-      if (await file.exists()) {
-        await file.delete();
-      }
-      await _backend.pushLiveFrame(
-        sessionId: liveSessionId,
-        officerId: session.nrp,
-        frameDataUrl: dataUrl,
-        latitude: _currentLat,
-        longitude: _currentLng,
-        locationLabel: _currentLat == null
-            ? 'Lokasi belum tersedia'
-            : 'Lat ${_currentLat!.toStringAsFixed(4)}, Lng ${_currentLng!.toStringAsFixed(4)}',
-      );
-      if (mounted) {
-        setState(() {
-          _liveFrameCount += 1;
-          _liveFrameStatus =
-              'Frame $_liveFrameCount terkirim Â· ${_liveFrameInterval.inSeconds}dt/frame Â· ${_compactTimeFormat.format(DateTime.now())}';
-        });
-      }
-      if (_liveFrameCount <= 1) {
-        await _refreshLiveSessions();
-      }
-    } catch (error) {
-      if (mounted) {
-        setState(() {
-          _liveFrameStatus = 'Frame gagal: $error';
-        });
-      }
-    } finally {
-      _isSendingLiveFrame = false;
     }
   }
 
@@ -1284,7 +1381,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
 
   String get _syncStatusLabel {
     if (_isRecording || _activeLiveSessionId != null) {
-      return _liveFrameStatus;
+      return _liveSignalingStatus.isEmpty
+          ? _liveFrameStatus
+          : '$_liveFrameStatus · $_liveSignalingStatus';
     }
     final pending = _pendingCount;
     return pending == 0
@@ -1506,7 +1605,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
 
   String _cameraStatusText() {
     if (_isRecording) {
-      return _liveFrameStatus;
+      return _liveSignalingStatus.isEmpty
+          ? _liveFrameStatus
+          : '$_liveFrameStatus · $_liveSignalingStatus';
     }
     if (_cameraError != null) {
       return 'Kamera gagal: $_cameraError';
@@ -1515,7 +1616,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       return 'Menyiapkan kamera...';
     }
     if (_cameraController?.value.isInitialized == true) {
-      return 'Preview kamera aktif';
+      return 'SIAP LIVE CAM';
     }
     return 'Preview kamera';
   }
@@ -1533,3 +1634,23 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     _syncBlackoutState();
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

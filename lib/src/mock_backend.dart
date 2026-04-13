@@ -111,6 +111,9 @@ class MockBackendService implements BackendGateway {
     required String officerName,
     required String deviceId,
     required String channelId,
+    required String preferredTransport,
+    required String fallbackTransport,
+    required String signalingUrl,
     double? latitude,
     double? longitude,
     String? locationLabel,
@@ -125,6 +128,9 @@ class MockBackendService implements BackendGateway {
     channelId: channelId,
     latitude: latitude,
     longitude: longitude,
+    transport: preferredTransport,
+    signalingUrl: signalingUrl,
+    signalingState: 'ready',
   );
 
   @override
@@ -285,3 +291,5 @@ class MockBackendService implements BackendGateway {
     'Noted, akan ditindaklanjuti.',
   ];
 }
+
+

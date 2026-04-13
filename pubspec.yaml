@@ -48,6 +48,7 @@ dependencies:
   battery_plus: ^7.0.0
   flutter_sound: ^9.30.0
   audio_session: ^0.2.3
+  image: ^4.5.4
 
 dev_dependencies:
   flutter_test:
