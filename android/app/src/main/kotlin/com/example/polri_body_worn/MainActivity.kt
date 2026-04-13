@@ -9,6 +9,7 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.view.KeyEvent
+import android.view.WindowManager
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
@@ -19,6 +20,42 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     private var sensorManager: SensorManager? = null
     private var proximitySensor: Sensor? = null
     private var lastProximityNear: Boolean? = null
+
+    private fun registerProximityListener() {
+        val sensor = proximitySensor ?: return
+        lastProximityNear = null
+        sensorManager?.unregisterListener(this)
+        sensorManager?.registerListener(
+            this,
+            sensor,
+            SensorManager.SENSOR_DELAY_FASTEST,
+        )
+    }
+
+    private fun emitProximityState(near: Boolean) {
+        if (::deviceChannel.isInitialized) {
+            deviceChannel.invokeMethod(
+                "proximityChanged",
+                mapOf("near" to near),
+            )
+        }
+    }
+
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        // Keep Activity visible over the lock screen so volume-key PTT works
+        // even when the phone screen is locked.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,
+            )
+        }
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -79,6 +116,13 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                     result.success(true)
                 }
 
+                "updatePersistentNotification" -> {
+                    val status = call.argument<String>("status") ?: "Standby"
+                    val channel = call.argument<String>("channel") ?: ""
+                    PolriPersistentService.update(this, status, channel)
+                    result.success(true)
+                }
+
                 else -> result.notImplemented()
             }
         }
@@ -86,18 +130,19 @@ class MainActivity : FlutterActivity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
-        proximitySensor?.let { sensor ->
-            sensorManager?.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
-        }
+        registerProximityListener()
     }
 
     override fun onPause() {
+        emitProximityState(false)
+        lastProximityNear = false
         sensorManager?.unregisterListener(this)
         super.onPause()
     }
 
     override fun onDestroy() {
         pttAudioBridge.disconnect()
+        emitProximityState(false)
         sensorManager?.unregisterListener(this)
         super.onDestroy()
     }
@@ -108,12 +153,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         val near = event.values.firstOrNull()?.let { it < sensor.maximumRange } ?: false
         if (lastProximityNear == near) return
         lastProximityNear = near
-        if (::deviceChannel.isInitialized) {
-            deviceChannel.invokeMethod(
-                "proximityChanged",
-                mapOf("near" to near),
-            )
-        }
+        emitProximityState(near)
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit

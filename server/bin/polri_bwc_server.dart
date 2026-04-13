@@ -81,6 +81,7 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
         'time': DateTime.now().toUtc().toIso8601String(),
         'onlineCount': _resolvedPresenceEntries(store).where((e) => e['resolvedStatus'] == 'online').length,
         'totalDevices': store.state.presence.length,
+        'liveCount': _resolvedLiveSessions(store).length,
         'recordingCount': store.state.recordings.length,
         'reportCount': store.state.reports.length,
       });
@@ -138,10 +139,120 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
           'longitude': body['longitude'] ?? existing['longitude'],
         },
       };
-      store.state = store.state.copyWith(presence: updated);
+      var nextState = store.state.copyWith(presence: updated);
+      nextState = _cleanupStalePttSessions(nextState);
+      final status = body['status'] as String? ?? 'online';
+      if (status == 'offline') {
+        nextState = _releaseOfficerFloor(nextState, username);
+        nextState = _releaseOfficerLiveSessions(nextState, username);
+      }
+      store.state = nextState;
       await store.save();
       _printPresenceSnapshot(store, reason: 'heartbeat');
       return _writeJson(response, {'status': 'ok'});
+    }
+
+    if (method == 'GET' && path == '/api/v1/live/sessions') {
+      return _writeJson(response, _resolvedLiveSessions(store));
+    }
+
+    if (method == 'POST' && path == '/api/v1/live/sessions') {
+      final body = await _readJson(request);
+      final officerId = body['officerId'] as String? ?? '';
+      if (officerId.isEmpty) {
+        response.statusCode = HttpStatus.badRequest;
+        return _writeJson(response, {'error': 'officerId required'});
+      }
+      final sessionId =
+          'LIVE_${DateTime.now().toUtc().toIso8601String().replaceAll(RegExp(r'[-:.TZ]'), '')}';
+      final liveSession = <String, dynamic>{
+        'sessionId': sessionId,
+        'officerId': officerId,
+        'officerName': body['officerName'] as String? ?? officerId,
+        'deviceId': body['deviceId'] as String? ?? '',
+        'status': 'live',
+        'startedAtIso': DateTime.now().toUtc().toIso8601String(),
+        'locationLabel': body['locationLabel'] as String? ?? 'Lokasi tidak tersedia',
+        'channelId': body['channelId'] as String? ?? '',
+        'latitude': body['latitude'],
+        'longitude': body['longitude'],
+        'lastFrameAtIso': '',
+        'frameDataUrl': '',
+        'frameCount': 0,
+      };
+      final updatedLive = Map<String, Map<String, dynamic>>.from(
+        store.state.liveSessions,
+      )..removeWhere((_, value) => (value['officerId'] as String? ?? '') == officerId)
+       ..[sessionId] = liveSession;
+      store.state = store.state.copyWith(liveSessions: updatedLive);
+      await store.save();
+      stdout.writeln('[${_clockNow()}][live-start] $officerId membuka live session $sessionId');
+      return _writeJson(response, liveSession);
+    }
+
+    if (method == 'POST' && path == '/api/v1/live/sessions/frame') {
+      final body = await _readJson(request);
+      final sessionId = body['sessionId'] as String? ?? '';
+      if (sessionId.isEmpty) {
+        response.statusCode = HttpStatus.badRequest;
+        return _writeJson(response, {'error': 'sessionId required'});
+      }
+      final current = store.state.liveSessions[sessionId];
+      if (current == null || current.isEmpty) {
+        response.statusCode = HttpStatus.notFound;
+        return _writeJson(response, {'error': 'live session not found'});
+      }
+      final updatedLive = Map<String, Map<String, dynamic>>.from(
+        store.state.liveSessions,
+      );
+      final frameCount = (current['frameCount'] as int? ?? 0) + 1;
+      updatedLive[sessionId] = {
+        ...current,
+        'frameDataUrl': body['frameDataUrl'] as String? ?? '',
+        'lastFrameAtIso': DateTime.now().toUtc().toIso8601String(),
+        'frameCount': frameCount,
+        'latitude': body['latitude'] ?? current['latitude'],
+        'longitude': body['longitude'] ?? current['longitude'],
+        'locationLabel': body['locationLabel'] ?? current['locationLabel'],
+      };
+      store.state = store.state.copyWith(liveSessions: updatedLive);
+      return _writeJson(response, {
+        'status': 'ok',
+        'sessionId': sessionId,
+        'frameCount': frameCount,
+      });
+    }
+
+    if (method == 'POST' && path == '/api/v1/live/sessions/stop') {
+      final body = await _readJson(request);
+      final sessionId = body['sessionId'] as String? ?? '';
+      final officerId = body['officerId'] as String? ?? '';
+      final updatedLive = Map<String, Map<String, dynamic>>.from(
+        store.state.liveSessions,
+      );
+      var removed = false;
+      if (sessionId.isNotEmpty && updatedLive.remove(sessionId) != null) {
+        removed = true;
+      } else if (officerId.isNotEmpty) {
+        final targetKey = updatedLive.entries
+            .firstWhere(
+              (entry) => (entry.value['officerId'] as String? ?? '') == officerId,
+              orElse: () => const MapEntry('', <String, dynamic>{}),
+            )
+            .key;
+        if (targetKey.isNotEmpty) {
+          updatedLive.remove(targetKey);
+          removed = true;
+        }
+      }
+      store.state = store.state.copyWith(liveSessions: updatedLive);
+      await store.save();
+      stdout.writeln(
+        '[${_clockNow()}][live-stop] ${(officerId.isEmpty ? sessionId : officerId)} menghentikan live session',
+      );
+      return _writeJson(response, {
+        'status': removed ? 'stopped' : 'idle',
+      });
     }
 
     if (method == 'GET' && path == '/api/v1/chats') {
@@ -202,6 +313,43 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
       return _writeJson(response, {'status': 'saved'});
     }
 
+    if (method == 'GET' && path == '/api/v1/sos') {
+      return _writeJson(response, store.state.sosAlerts);
+    }
+
+    if (method == 'POST' && path == '/api/v1/sos') {
+      final body = await _readJson(request);
+      final officerId = body['officerId'] as String? ?? '';
+      final officerName = body['officerName'] as String? ?? officerId;
+      final channelId = body['channelId'] as String? ?? '';
+      final locationLabel =
+          body['locationLabel'] as String? ?? 'Lokasi tidak tersedia';
+      final alert = <String, dynamic>{
+        'id':
+            'SOS_${DateTime.now().toUtc().toIso8601String().replaceAll(RegExp(r'[-:.TZ]'), '')}',
+        'officerId': officerId,
+        'officerName': officerName,
+        'deviceId': body['deviceId'] as String? ?? '',
+        'channelId': channelId,
+        'status': 'new',
+        'triggeredAtIso': DateTime.now().toUtc().toIso8601String(),
+        'locationLabel': locationLabel,
+        'source': body['source'] as String? ?? 'app',
+        'latitude': body['latitude'],
+        'longitude': body['longitude'],
+        'recordingId': body['recordingId'] as String? ?? '',
+        'targetOfficerId': body['targetOfficerId'] as String? ?? '',
+        'notes': body['notes'] as String? ?? '',
+      };
+      final alerts = [alert, ...store.state.sosAlerts].take(50).toList();
+      store.state = store.state.copyWith(sosAlerts: alerts);
+      await store.save();
+      stdout.writeln(
+        '[${_clockNow()}][SOS] ${officerId.isEmpty ? 'unknown' : officerId} @ ${channelId.isEmpty ? '-' : channelId.toUpperCase()} | $locationLabel',
+      );
+      return _writeJson(response, alert);
+    }
+
     if (method == 'GET' && path == '/api/v1/recordings') {
       return _writeJson(response, store.state.recordings);
     }
@@ -249,6 +397,7 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
         response.statusCode = HttpStatus.badRequest;
         return _writeJson(response, {'error': 'officerId required'});
       }
+      store.state = _cleanupStalePttSessions(store.state);
       final activeSession = _activeSessionForChannel(store.state, channelId);
       if (activeSession != null) {
         final currentHolder = activeSession['officerId'] as String? ?? '';
@@ -314,6 +463,7 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
       final body = await _readJson(request);
       final channelId = body['channelId'] as String? ?? 'ch3';
       final requestedOfficerId = body['officerId'] as String? ?? '';
+      store.state = _cleanupStalePttSessions(store.state);
       final activeSession = _activeSessionForChannel(store.state, channelId);
       if (activeSession == null) {
         return _writeJson(response, {
@@ -494,6 +644,99 @@ Map<String, dynamic>? _activeSessionForChannel(
   return null;
 }
 
+List<Map<String, dynamic>> _resolvedLiveSessions(LocalServerStore store) {
+  final sessions = _cleanupStaleLiveSessions(store.state).liveSessions.values.toList()
+    ..sort(
+      (a, b) => (b['startedAtIso'] as String? ?? '').compareTo(
+        a['startedAtIso'] as String? ?? '',
+      ),
+    );
+  return sessions;
+}
+
+LocalServerState _cleanupStalePttSessions(LocalServerState state) {
+  if (state.activePttSessions.isEmpty) return state;
+  final cleaned = <String, Map<String, dynamic>>{};
+  for (final entry in state.activePttSessions.entries) {
+    final session = entry.value;
+    final officerId = session['officerId'] as String? ?? '';
+    if (_isOfficerOnline(state, officerId)) {
+      cleaned[entry.key] = session;
+    }
+  }
+  if (cleaned.length == state.activePttSessions.length) {
+    return state;
+  }
+  return state.copyWith(
+    activePttSessions: cleaned,
+    activePttSession: _primaryActiveSession(cleaned),
+  );
+}
+
+LocalServerState _cleanupStaleLiveSessions(LocalServerState state) {
+  if (state.liveSessions.isEmpty) return state;
+  final cleaned = <String, Map<String, dynamic>>{};
+  for (final entry in state.liveSessions.entries) {
+    final officerId = entry.value['officerId'] as String? ?? '';
+    if (_isOfficerOnline(state, officerId)) {
+      cleaned[entry.key] = entry.value;
+    }
+  }
+  if (cleaned.length == state.liveSessions.length) {
+    return state;
+  }
+  return state.copyWith(liveSessions: cleaned);
+}
+
+LocalServerState _releaseOfficerFloor(LocalServerState state, String officerId) {
+  if (officerId.isEmpty || state.activePttSessions.isEmpty) return state;
+  final cleaned = <String, Map<String, dynamic>>{};
+  for (final entry in state.activePttSessions.entries) {
+    final holder = entry.value['officerId'] as String? ?? '';
+    if (holder != officerId) {
+      cleaned[entry.key] = entry.value;
+    }
+  }
+  if (cleaned.length == state.activePttSessions.length) {
+    return state;
+  }
+  return state.copyWith(
+    activePttSessions: cleaned,
+    activePttSession: _primaryActiveSession(cleaned),
+  );
+}
+
+LocalServerState _releaseOfficerLiveSessions(
+  LocalServerState state,
+  String officerId,
+) {
+  if (officerId.isEmpty || state.liveSessions.isEmpty) return state;
+  final cleaned = <String, Map<String, dynamic>>{};
+  for (final entry in state.liveSessions.entries) {
+    final holder = entry.value['officerId'] as String? ?? '';
+    if (holder != officerId) {
+      cleaned[entry.key] = entry.value;
+    }
+  }
+  if (cleaned.length == state.liveSessions.length) {
+    return state;
+  }
+  return state.copyWith(liveSessions: cleaned);
+}
+
+bool _isOfficerOnline(LocalServerState state, String officerId) {
+  if (officerId.isEmpty) return false;
+  final presence = state.presence[officerId];
+  if (presence == null || presence.isEmpty) return false;
+  final status = presence['status'] as String? ?? 'offline';
+  if (status == 'offline') return false;
+  final lastSeenIso = presence['lastSeenIso'] as String? ?? '';
+  final lastSeen = DateTime.tryParse(lastSeenIso)?.toUtc();
+  if (lastSeen == null) return false;
+  return DateTime.now().toUtc().difference(lastSeen) <=
+      const Duration(seconds: 45);
+}
+
 Map<String, dynamic> _primaryActiveSession(
   Map<String, Map<String, dynamic>> sessions,
 ) {
@@ -559,7 +802,9 @@ class LocalServerState {
     required this.users,
     required this.chatThreads,
     required this.reports,
+    required this.sosAlerts,
     required this.recordings,
+    required this.liveSessions,
     required this.presence,
     required this.pttChannels,
     required this.pttFeeds,
@@ -570,7 +815,9 @@ class LocalServerState {
   final Map<String, Map<String, dynamic>> users;
   final Map<String, List<Map<String, dynamic>>> chatThreads;
   final List<Map<String, dynamic>> reports;
+  final List<Map<String, dynamic>> sosAlerts;
   final List<Map<String, dynamic>> recordings;
+  final Map<String, Map<String, dynamic>> liveSessions;
   final Map<String, Map<String, dynamic>> presence;
   final List<Map<String, dynamic>> pttChannels;
   final Map<String, List<Map<String, dynamic>>> pttFeeds;
@@ -584,7 +831,7 @@ class LocalServerState {
           'username': 'test1',
           'password': 'test1',
           'officerName': 'Test Satu',
-          'rankLabel': 'Bripda',
+          'rankLabel': '',
           'unitName': 'Satuan Alpha',
           'shiftLabel': 'Shift Pagi Aktif',
           'shiftWindow': '07:00–15:00',
@@ -594,7 +841,7 @@ class LocalServerState {
           'username': 'test2',
           'password': 'test2',
           'officerName': 'Test Dua',
-          'rankLabel': 'Briptu',
+          'rankLabel': '',
           'unitName': 'Satuan Bravo',
           'shiftLabel': 'Shift Siang Aktif',
           'shiftWindow': '15:00–23:00',
@@ -604,16 +851,88 @@ class LocalServerState {
           'username': 'test3',
           'password': 'test3',
           'officerName': 'Test Tiga',
-          'rankLabel': 'Ipda',
+          'rankLabel': '',
           'unitName': 'Satuan Charlie',
           'shiftLabel': 'Shift Malam Aktif',
           'shiftWindow': '23:00–07:00',
           'nrp': 'test3',
         },
+        'test4': {
+          'username': 'test4',
+          'password': 'test4',
+          'officerName': 'Test Empat',
+          'rankLabel': '',
+          'unitName': 'Satuan Delta',
+          'shiftLabel': 'Shift Pagi Aktif',
+          'shiftWindow': '07:00–15:00',
+          'nrp': 'test4',
+        },
+        'test5': {
+          'username': 'test5',
+          'password': 'test5',
+          'officerName': 'Test Lima',
+          'rankLabel': '',
+          'unitName': 'Satuan Echo',
+          'shiftLabel': 'Shift Siang Aktif',
+          'shiftWindow': '15:00–23:00',
+          'nrp': 'test5',
+        },
+        'test6': {
+          'username': 'test6',
+          'password': 'test6',
+          'officerName': 'Test Enam',
+          'rankLabel': '',
+          'unitName': 'Satuan Foxtrot',
+          'shiftLabel': 'Shift Malam Aktif',
+          'shiftWindow': '23:00–07:00',
+          'nrp': 'test6',
+        },
+        'test7': {
+          'username': 'test7',
+          'password': 'test7',
+          'officerName': 'Test Tujuh',
+          'rankLabel': '',
+          'unitName': 'Satuan Golf',
+          'shiftLabel': 'Shift Pagi Aktif',
+          'shiftWindow': '07:00–15:00',
+          'nrp': 'test7',
+        },
+        'test8': {
+          'username': 'test8',
+          'password': 'test8',
+          'officerName': 'Test Delapan',
+          'rankLabel': '',
+          'unitName': 'Satuan Hotel',
+          'shiftLabel': 'Shift Siang Aktif',
+          'shiftWindow': '15:00–23:00',
+          'nrp': 'test8',
+        },
+        'test9': {
+          'username': 'test9',
+          'password': 'test9',
+          'officerName': 'Test Sembilan',
+          'rankLabel': '',
+          'unitName': 'Satuan India',
+          'shiftLabel': 'Shift Malam Aktif',
+          'shiftWindow': '23:00–07:00',
+          'nrp': 'test9',
+        },
+        'test10': {
+          'username': 'test10',
+          'password': 'test10',
+          'officerName': 'Test Sepuluh',
+          'rankLabel': '',
+          'unitName': 'Satuan Juliet',
+          'shiftLabel': 'Shift Pagi Aktif',
+          'shiftWindow': '07:00–15:00',
+          'nrp': 'test10',
+        },
       },
       chatThreads: const {},
       reports: const [],
+      sosAlerts: const [],
       recordings: const [],
+      liveSessions: const {},
       presence: const {},
       pttChannels: const [
         {'id': 'ch1', 'label': 'Ch 1', 'subtitle': ''},
@@ -647,10 +966,18 @@ class LocalServerState {
           (item) => Map<String, dynamic>.from(item as Map),
         ),
       ),
+      sosAlerts: List<Map<String, dynamic>>.from(
+        (json['sosAlerts'] as List? ?? const []).map(
+          (item) => Map<String, dynamic>.from(item as Map),
+        ),
+      ),
       recordings: List<Map<String, dynamic>>.from(
         (json['recordings'] as List? ?? const []).map(
           (item) => Map<String, dynamic>.from(item as Map),
         ),
+      ),
+      liveSessions: (json['liveSessions'] as Map<String, dynamic>? ?? {}).map(
+        (key, value) => MapEntry(key, Map<String, dynamic>.from(value as Map)),
       ),
       presence: (json['presence'] as Map<String, dynamic>? ?? {}).map(
         (key, value) => MapEntry(key, Map<String, dynamic>.from(value as Map)),
@@ -686,7 +1013,9 @@ class LocalServerState {
     Map<String, Map<String, dynamic>>? users,
     Map<String, List<Map<String, dynamic>>>? chatThreads,
     List<Map<String, dynamic>>? reports,
+    List<Map<String, dynamic>>? sosAlerts,
     List<Map<String, dynamic>>? recordings,
+    Map<String, Map<String, dynamic>>? liveSessions,
     Map<String, Map<String, dynamic>>? presence,
     List<Map<String, dynamic>>? pttChannels,
     Map<String, List<Map<String, dynamic>>>? pttFeeds,
@@ -697,7 +1026,9 @@ class LocalServerState {
       users: users ?? this.users,
       chatThreads: chatThreads ?? this.chatThreads,
       reports: reports ?? this.reports,
+      sosAlerts: sosAlerts ?? this.sosAlerts,
       recordings: recordings ?? this.recordings,
+      liveSessions: liveSessions ?? this.liveSessions,
       presence: presence ?? this.presence,
       pttChannels: pttChannels ?? this.pttChannels,
       pttFeeds: pttFeeds ?? this.pttFeeds,
@@ -711,7 +1042,9 @@ class LocalServerState {
       'users': users,
       'chatThreads': chatThreads,
       'reports': reports,
+      'sosAlerts': sosAlerts,
       'recordings': recordings,
+      'liveSessions': liveSessions,
       'presence': presence,
       'pttChannels': pttChannels,
       'pttFeeds': pttFeeds,

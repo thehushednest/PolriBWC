@@ -25,6 +25,42 @@ abstract class BackendGateway {
   Future<void> saveChatThreads(Map<String, List<ChatMessage>> threads);
   Future<List<IncidentReport>> loadReports();
   Future<void> saveReports(List<IncidentReport> reports);
+  Future<List<SosAlert>> loadSosAlerts();
+  Future<List<LiveStreamSession>> loadLiveSessions();
+  Future<LiveStreamSession?> startLiveStream({
+    required String officerId,
+    required String officerName,
+    required String deviceId,
+    required String channelId,
+    double? latitude,
+    double? longitude,
+    String? locationLabel,
+  });
+  Future<void> pushLiveFrame({
+    required String sessionId,
+    required String officerId,
+    required String frameDataUrl,
+    double? latitude,
+    double? longitude,
+    String? locationLabel,
+  });
+  Future<void> stopLiveStream({
+    required String sessionId,
+    required String officerId,
+  });
+  Future<SosAlert?> triggerSos({
+    required String officerId,
+    required String officerName,
+    required String deviceId,
+    required String channelId,
+    required String source,
+    String recordingId,
+    String targetOfficerId,
+    double? latitude,
+    double? longitude,
+    String? locationLabel,
+    String? notes,
+  });
   Future<List<ChatMessage>> appendMessage({
     required String threadName,
     required Map<String, List<ChatMessage>> currentThreads,

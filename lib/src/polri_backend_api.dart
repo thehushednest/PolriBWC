@@ -23,6 +23,7 @@ class PolriBackendApi implements BackendGateway {
 
   static const String _chatFallbackKey = 'chat_threads_api_fallback_v1';
   static const String _reportFallbackKey = 'incident_reports_api_fallback_v1';
+  static const String _sosFallbackKey = 'sos_alerts_api_fallback_v1';
 
   @override
   String get connectionLabel => 'API ${_config.rootUrl}';
@@ -218,6 +219,147 @@ class PolriBackendApi implements BackendGateway {
   }
 
   @override
+  Future<List<SosAlert>> loadSosAlerts() async {
+    try {
+      final decoded = await _client.getJson(_config.sosEndpoint) as List<dynamic>;
+      return decoded
+          .map((item) => SosAlert.fromJson(item as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      return _loadSosFallback();
+    }
+  }
+
+  @override
+  Future<List<LiveStreamSession>> loadLiveSessions() async {
+    try {
+      final decoded =
+          await _client.getJson(_config.liveSessionsEndpoint) as List<dynamic>;
+      return decoded
+          .map((item) => LiveStreamSession.fromJson(item as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  @override
+  Future<LiveStreamSession?> startLiveStream({
+    required String officerId,
+    required String officerName,
+    required String deviceId,
+    required String channelId,
+    double? latitude,
+    double? longitude,
+    String? locationLabel,
+  }) async {
+    try {
+      final response = await _client.postJson(_config.liveSessionsEndpoint, {
+        'officerId': officerId,
+        'officerName': officerName,
+        'deviceId': deviceId,
+        'channelId': channelId,
+        'latitude': latitude,
+        'longitude': longitude,
+        'locationLabel': locationLabel ?? 'Lokasi tidak tersedia',
+      });
+      return LiveStreamSession.fromJson(response as Map<String, dynamic>);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> pushLiveFrame({
+    required String sessionId,
+    required String officerId,
+    required String frameDataUrl,
+    double? latitude,
+    double? longitude,
+    String? locationLabel,
+  }) async {
+    try {
+      await _client.postJson('${_config.liveSessionsEndpoint}/frame', {
+        'sessionId': sessionId,
+        'officerId': officerId,
+        'frameDataUrl': frameDataUrl,
+        'latitude': latitude,
+        'longitude': longitude,
+        'locationLabel': locationLabel ?? 'Lokasi tidak tersedia',
+      });
+    } catch (_) {}
+  }
+
+  @override
+  Future<void> stopLiveStream({
+    required String sessionId,
+    required String officerId,
+  }) async {
+    try {
+      await _client.postJson('${_config.liveSessionsEndpoint}/stop', {
+        'sessionId': sessionId,
+        'officerId': officerId,
+      });
+    } catch (_) {}
+  }
+
+  @override
+  Future<SosAlert?> triggerSos({
+    required String officerId,
+    required String officerName,
+    required String deviceId,
+    required String channelId,
+    required String source,
+    String recordingId = '',
+    String targetOfficerId = '',
+    double? latitude,
+    double? longitude,
+    String? locationLabel,
+    String? notes,
+  }) async {
+    final payload = {
+      'officerId': officerId,
+      'officerName': officerName,
+      'deviceId': deviceId,
+      'channelId': channelId,
+      'source': source,
+      'recordingId': recordingId,
+      'targetOfficerId': targetOfficerId,
+      'latitude': latitude,
+      'longitude': longitude,
+      'locationLabel': locationLabel ?? 'Lokasi tidak tersedia',
+      'notes': notes ?? '',
+    };
+    try {
+      final response = await _client.postJson(_config.sosEndpoint, payload);
+      final alert = SosAlert.fromJson(response as Map<String, dynamic>);
+      final existing = await _loadSosFallback();
+      await _saveSosFallback([alert, ...existing]);
+      return alert;
+    } catch (_) {
+      final alert = SosAlert(
+        id: 'SOS_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}',
+        officerId: officerId,
+        officerName: officerName,
+        deviceId: deviceId,
+        channelId: channelId,
+        status: 'queued',
+        triggeredAtIso: DateTime.now().toIso8601String(),
+        locationLabel: locationLabel ?? 'Lokasi tidak tersedia',
+        source: source,
+        latitude: latitude,
+        longitude: longitude,
+        recordingId: recordingId,
+        targetOfficerId: targetOfficerId,
+        notes: notes ?? '',
+      );
+      final existing = await _loadSosFallback();
+      await _saveSosFallback([alert, ...existing]);
+      return alert;
+    }
+  }
+
+  @override
   Future<List<ChatMessage>> appendMessage({
     required String threadName,
     required Map<String, List<ChatMessage>> currentThreads,
@@ -390,6 +532,24 @@ class PolriBackendApi implements BackendGateway {
     await prefs.setString(
       _reportFallbackKey,
       jsonEncode(reports.map((item) => item.toJson()).toList()),
+    );
+  }
+
+  Future<List<SosAlert>> _loadSosFallback() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_sosFallbackKey);
+    if (raw == null || raw.isEmpty) return const [];
+    final decoded = jsonDecode(raw) as List<dynamic>;
+    return decoded
+        .map((item) => SosAlert.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> _saveSosFallback(List<SosAlert> alerts) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _sosFallbackKey,
+      jsonEncode(alerts.map((item) => item.toJson()).toList()),
     );
   }
 

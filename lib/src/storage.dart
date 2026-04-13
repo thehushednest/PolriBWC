@@ -46,6 +46,25 @@ class RecordingStorage {
     await File(file.path).copy(target.path);
     return target.path;
   }
+
+  Future<String> persistPhoto(XFile file) async {
+    final documents = await getApplicationDocumentsDirectory();
+    final photosDir = Directory(p.join(documents.path, 'snapshots'));
+    if (!await photosDir.exists()) {
+      await photosDir.create(recursive: true);
+    }
+
+    final extension =
+        p.extension(file.path).isEmpty ? '.jpg' : p.extension(file.path);
+    final target = File(
+      p.join(
+        photosDir.path,
+        'snapshot_${DateTime.now().millisecondsSinceEpoch}$extension',
+      ),
+    );
+    await File(file.path).copy(target.path);
+    return target.path;
+  }
 }
 
 String formatStorage(int bytes) {

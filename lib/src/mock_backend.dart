@@ -100,6 +100,80 @@ class MockBackendService implements BackendGateway {
   }
 
   @override
+  Future<List<SosAlert>> loadSosAlerts() async => const [];
+
+  @override
+  Future<List<LiveStreamSession>> loadLiveSessions() async => const [];
+
+  @override
+  Future<LiveStreamSession?> startLiveStream({
+    required String officerId,
+    required String officerName,
+    required String deviceId,
+    required String channelId,
+    double? latitude,
+    double? longitude,
+    String? locationLabel,
+  }) async => LiveStreamSession(
+    sessionId: 'LIVE_${DateTime.now().millisecondsSinceEpoch}',
+    officerId: officerId,
+    officerName: officerName,
+    deviceId: deviceId,
+    status: 'live',
+    startedAtIso: DateTime.now().toIso8601String(),
+    locationLabel: locationLabel ?? 'Lokasi tidak tersedia',
+    channelId: channelId,
+    latitude: latitude,
+    longitude: longitude,
+  );
+
+  @override
+  Future<void> pushLiveFrame({
+    required String sessionId,
+    required String officerId,
+    required String frameDataUrl,
+    double? latitude,
+    double? longitude,
+    String? locationLabel,
+  }) async {}
+
+  @override
+  Future<void> stopLiveStream({
+    required String sessionId,
+    required String officerId,
+  }) async {}
+
+  @override
+  Future<SosAlert?> triggerSos({
+    required String officerId,
+    required String officerName,
+    required String deviceId,
+    required String channelId,
+    required String source,
+    String recordingId = '',
+    String targetOfficerId = '',
+    double? latitude,
+    double? longitude,
+    String? locationLabel,
+    String? notes,
+  }) async => SosAlert(
+    id: 'SOS_${DateTime.now().millisecondsSinceEpoch}',
+    officerId: officerId,
+    officerName: officerName,
+    deviceId: deviceId,
+    channelId: channelId,
+    status: 'queued',
+    triggeredAtIso: DateTime.now().toIso8601String(),
+    locationLabel: locationLabel ?? 'Lokasi tidak tersedia',
+    source: source,
+    latitude: latitude,
+    longitude: longitude,
+    recordingId: recordingId,
+    targetOfficerId: targetOfficerId,
+    notes: notes ?? '',
+  );
+
+  @override
   Future<List<ChatMessage>> appendMessage({
     required String threadName,
     required Map<String, List<ChatMessage>> currentThreads,

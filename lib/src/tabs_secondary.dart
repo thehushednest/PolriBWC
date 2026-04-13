@@ -4,7 +4,6 @@ import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
 
 import 'models.dart';
-import 'storage.dart';
 import 'ui_components.dart';
 
 class RecordTab extends StatelessWidget {
@@ -67,460 +66,362 @@ class RecordTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        // ── Fullscreen camera preview ──────────────────────────────────────
+        _buildPreviewLayer(),
+
+        // ── Top gradient + status bar ──────────────────────────────────────
+        Positioned(
+          top: 0,
+          left: 0,
+          right: 0,
+          child: _buildTopOverlay(),
+        ),
+
+        // ── Bottom gradient + controls ─────────────────────────────────────
+        Positioned(
+          bottom: 0,
+          left: 0,
+          right: 0,
+          child: _buildBottomOverlay(),
+        ),
+
+        // ── Camera-not-ready status (center) ──────────────────────────────
+        if (!cameraReady && !isBlackoutActive)
+          Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const _PreviewBadge(),
+                const SizedBox(height: 8),
+                Text(
+                  cameraStatusText,
+                  style: const TextStyle(
+                    color: Color(0xFF707887),
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+        // ── Proximity blackout ─────────────────────────────────────────────
+        if (isBlackoutActive)
+          const ColoredBox(
+            color: Colors.black,
+            child: Center(
+              child: Text(
+                'Blackout aktif — sensor depan terhalang',
+                style: TextStyle(
+                  color: Color(0xFF9AA5B9),
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildPreviewLayer() {
+    return ColoredBox(
+      color: const Color(0xFF0A0D12),
+      child: preview != null
+          ? SizedBox.expand(
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: 9,
+                  height: 16,
+                  child: preview!,
+                ),
+              ),
+            )
+          : const SizedBox.expand(),
+    );
+  }
+
+  Widget _buildTopOverlay() {
     return Container(
-      color: const Color(0xFF11141B),
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 40),
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xCC000000), Colors.transparent],
+        ),
+      ),
+      child: Row(
         children: [
+          // REC indicator + timer
+          if (isRecording) ...[
+            Container(
+              width: 8,
+              height: 8,
+              decoration: const BoxDecoration(
+                color: Color(0xFFFF4545),
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              recordingClock,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+                fontSize: 15,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ] else
+            const Text(
+              'SIAP LIVE CAM',
+              style: TextStyle(
+                color: Color(0xFFABB8CC),
+                fontWeight: FontWeight.w700,
+                fontSize: 13,
+                letterSpacing: 0.8,
+              ),
+            ),
+          const Spacer(),
+          // Resolution chip
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.45),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.15),
+              ),
+            ),
+            child: const Text(
+              '1080p · 30fps',
+              style: TextStyle(
+                color: Color(0xFFDBE4F5),
+                fontWeight: FontWeight.w700,
+                fontSize: 11.5,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          // PTT channel chip
+          GestureDetector(
+            onTap: onOpenPtt,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFF4545).withValues(alpha: 0.25),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: const Color(0xFFFF4545).withValues(alpha: 0.5),
+                ),
+              ),
+              child: Text(
+                pttLabel,
+                style: const TextStyle(
+                  color: Color(0xFFFF9C9C),
+                  fontWeight: FontWeight.w800,
+                  fontSize: 11.5,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBottomOverlay() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 40, 16, 16),
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.bottomCenter,
+          end: Alignment.topCenter,
+          colors: [Color(0xE6000000), Colors.transparent],
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // GPS + tag row
           Row(
             children: [
               const Icon(
-                Icons.fiber_manual_record,
-                size: 10,
-                color: Color(0xFFFF6767),
+                Icons.location_on,
+                size: 13,
+                color: Color(0xFF62EAC9),
               ),
-              const SizedBox(width: 6),
-              const Text(
-                'REC',
-                style: TextStyle(
-                  color: Color(0xFFFF7474),
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                recordingClock,
-                style: const TextStyle(
-                  color: Color(0xFFDDE4F5),
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 5,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF2E323A),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Text(
-                  '1080p · 30fps',
-                  style: TextStyle(
-                    color: Color(0xFFDBE1EF),
-                    fontWeight: FontWeight.w700,
-                    fontSize: 12,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Container(
-            height: 214,
-            decoration: BoxDecoration(
-              color: const Color(0xFF151A22),
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(18),
-              child: Stack(
-                fit: StackFit.expand,
-                  children: [
-                    if (preview != null)
-                      Positioned.fill(
-                        child: ClipRect(
-                          child: FittedBox(
-                            fit: BoxFit.cover,
-                            child: SizedBox(
-                              width: 214 * previewAspectRatio,
-                              height: 214,
-                              child: AspectRatio(
-                                aspectRatio: previewAspectRatio,
-                                child: preview!,
-                              ),
-                            ),
-                          ),
-                        ),
-                      )
-                    else
-                      const ColoredBox(color: Color(0xFF151A22)),
-                  DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: cameraReady
-                          ? Colors.black.withValues(alpha: 0.16)
-                          : Colors.transparent,
-                    ),
-                  ),
-                  if (isBlackoutActive)
-                    const DecoratedBox(
-                      decoration: BoxDecoration(color: Colors.black),
-                      child: Center(
-                        child: Text(
-                          'Blackout aktif - sensor depan terhalang',
-                          style: TextStyle(
-                            color: Color(0xFF9AA5B9),
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ),
-                  Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      if (!cameraReady) const _PreviewBadge(),
-                      const SizedBox(height: 8),
-                      Text(
-                        cameraStatusText,
-                        style: const TextStyle(color: Color(0xFF707887)),
-                      ),
-                    ],
-                  ),
-                  const Positioned(
-                    left: 14,
-                    bottom: 14,
-                    child: Text(
-                      'Akses kamera aktif',
-                      style: TextStyle(
-                        color: Color(0xFF7D8592),
-                        fontSize: 12.5,
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    right: 14,
-                    bottom: 14,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Text(
-                          recordingClock,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 12,
-                          ),
-                        ),
-                        Text(
-                          recordingDateLabel,
-                          style: const TextStyle(
-                            color: Color(0xFFD0D6E3),
-                            fontSize: 10.5,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
+              const SizedBox(width: 5),
               Expanded(
-                child: RecordMetric(
-                  title: 'PTT',
-                  value: pttLabel,
-                  accent: const Color(0xFFFF7B7B),
-                  onTap: onOpenPtt,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: RecordMetric(
-                  title: 'Ukuran',
-                  value: formatStorage(recordingBytes),
-                  accent: const Color(0xFF62EAC9),
-                ),
-              ),
-              const SizedBox(width: 8),
-              const Expanded(
-                child: RecordMetric(title: 'Enkripsi', value: 'AES-256'),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: RecordMetric(
-                  title: 'Upload',
-                  value: syncStatusLabel.contains('Semua') ? 'Online' : 'Sync',
-                  accent: const Color(0xFF62EAC9),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 10,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1A2030),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: const Color(0xFF2B3550)),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(
-                        Icons.location_on_outlined,
-                        size: 16,
-                        color: Color(0xFF62EAC9),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          locationLabel,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-                    ],
+                child: Text(
+                  locationCoords,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xFFB0BFDA),
+                    fontSize: 11.5,
                   ),
                 ),
               ),
               const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 10,
+                  horizontal: 9,
+                  vertical: 3,
                 ),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF16322D),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFF1E5B4D)),
+                  color: const Color(0xFF1B4F47).withValues(alpha: 0.8),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: const Color(0xFF2BC39D).withValues(alpha: 0.6),
+                  ),
                 ),
                 child: Text(
                   selectedTag,
                   style: const TextStyle(
                     color: Color(0xFF7AE5C0),
                     fontWeight: FontWeight.w800,
-                    fontSize: 12,
+                    fontSize: 11,
                   ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: const Color(0xFF202636),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Lokasi',
-                  style: TextStyle(color: Color(0xFF79839A), fontSize: 12),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  locationLabel,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14.5,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  locationCoords,
-                  style: const TextStyle(
-                    color: Color(0xFF91A0BE),
-                    fontSize: 11.5,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1A2030),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFF2B3550)),
-            ),
-            child: Row(
-              children: [
-                const Icon(
-                  Icons.cloud_sync_outlined,
-                  size: 16,
-                  color: Color(0xFF82B1FF),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    syncStatusLabel,
-                    style: const TextStyle(
-                      color: Color(0xFFD7E2F5),
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.w600,
+          const SizedBox(height: 14),
+
+          // Tag chips row
+          SizedBox(
+            height: 30,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: tags.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 8),
+              itemBuilder: (_, i) {
+                final tag = tags[i];
+                final active = selectedTag == tag;
+                return GestureDetector(
+                  onTap: () => onSelectTag(tag),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: active
+                          ? const Color(0xFF1B4F47)
+                          : Colors.black.withValues(alpha: 0.45),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: active
+                            ? const Color(0xFF2BC39D)
+                            : Colors.white.withValues(alpha: 0.18),
+                      ),
+                    ),
+                    child: Text(
+                      tag,
+                      style: TextStyle(
+                        color: active
+                            ? const Color(0xFFB4F6E3)
+                            : const Color(0xFFCDD6E8),
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                      ),
                     ),
                   ),
-                ),
-              ],
+                );
+              },
             ),
           ),
-          const SizedBox(height: 10),
-          Container(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-            decoration: BoxDecoration(
-              color: const Color(0xFF142724),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: const Color(0xFF1E5B4D)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'TAG INSIDEN CEPAT',
-                  style: TextStyle(
-                    color: Color(0xFF7AE5C0),
-                    fontWeight: FontWeight.w800,
-                    fontSize: 12,
-                  ),
+          const SizedBox(height: 18),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.45),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.14),
                 ),
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final tag in tags)
-                      ChoiceChip(
-                        label: Text(tag),
-                        selected: selectedTag == tag,
-                        onSelected: (_) => onSelectTag(tag),
-                        showCheckmark: false,
-                        labelStyle: TextStyle(
-                          color: selectedTag == tag
-                              ? const Color(0xFFB4F6E3)
-                              : const Color(0xFFC5D1E3),
-                          fontWeight: FontWeight.w700,
-                          fontSize: 12,
-                        ),
-                        side: BorderSide(
-                          color: selectedTag == tag
-                              ? const Color(0xFF2BC39D)
-                              : const Color(0xFF415160),
-                        ),
-                        backgroundColor: const Color(0xFF253039),
-                        selectedColor: const Color(0xFF1B4F47),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
+              ),
+              child: Text(
+                syncStatusLabel,
+                style: const TextStyle(
+                  color: Color(0xFFB7C7E1),
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+
+          // Action buttons row + record button
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              _OverlayAction(
+                icon: isMuted ? Icons.mic_off : Icons.mic,
+                label: isMuted ? 'Muted' : 'Audio',
+                active: isMuted,
+                activeColor: const Color(0xFFFF6B6B),
+                onTap: onToggleMute,
+              ),
+              _OverlayAction(
+                icon: isFlashOn ? Icons.flash_on : Icons.flash_off,
+                label: isFlashOn ? 'Flash ON' : 'Flash',
+                active: isFlashOn,
+                activeColor: const Color(0xFFFFD166),
+                onTap: onToggleFlash,
+              ),
+
+              // Record button (center, bigger)
+              GestureDetector(
+                onTap: isRecording ? onStop : onStart,
+                child: Container(
+                  width: 76,
+                  height: 76,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.85),
+                      width: 3,
+                    ),
+                  ),
+                  child: Center(
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      width: isRecording ? 28 : 56,
+                      height: isRecording ? 28 : 56,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFF3B3B),
+                        borderRadius: BorderRadius.circular(
+                          isRecording ? 6 : 28,
                         ),
                       ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
-            decoration: BoxDecoration(
-              color: const Color(0xFF121824),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: const Color(0xFF20283A)),
-            ),
-            child: Column(
-              children: [
-                Center(
-                  child: GestureDetector(
-                    onTap: isRecording ? onStop : onStart,
-                    child: Column(
-                      children: [
-                        Container(
-                          width: 108,
-                          height: 108,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: const Color(0xFFFF6060),
-                              width: 4,
-                            ),
-                          ),
-                          child: Center(
-                            child: Container(
-                              width: 80,
-                              height: 80,
-                              decoration: const BoxDecoration(
-                                color: Color(0xFFFF5757),
-                                shape: BoxShape.circle,
-                              ),
-                              child: Icon(
-                                isRecording
-                                    ? Icons.stop_rounded
-                                    : Icons.fiber_manual_record,
-                                color: Colors.white,
-                                size: 36,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          isRecording ? 'Hentikan Rekam' : 'Mulai Rekam',
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
                     ),
                   ),
                 ),
-                const SizedBox(height: 14),
-                Wrap(
-                  alignment: WrapAlignment.spaceBetween,
-                  runSpacing: 12,
-                  spacing: 12,
-                  children: [
-                    RoundAction(
-                      label: isMuted ? 'Muted' : 'Audio',
-                      icon: isMuted ? Icons.mic_off : Icons.volume_up_outlined,
-                      accent: isMuted
-                          ? const Color(0xFF7F1D1D)
-                          : const Color(0xFF262B35),
-                      onTap: onToggleMute,
-                    ),
-                    RoundAction(
-                      label: isFlashOn ? 'Flash ON' : 'Flash',
-                      icon: isFlashOn ? Icons.flash_on : Icons.flash_off,
-                      accent: isFlashOn
-                          ? const Color(0xFF7A5818)
-                          : const Color(0xFF262B35),
-                      onTap: onToggleFlash,
-                    ),
-                    RoundAction(
-                      label: 'Foto',
-                      icon: Icons.photo_camera_outlined,
-                      accent: const Color(0xFF262B35),
-                      onTap: onTakePhoto,
-                    ),
-                    RoundAction(
-                      label: 'SOS',
-                      icon: Icons.sos,
-                      accent: const Color(0xFF8A2424),
-                      onTap: onSos,
-                    ),
-                  ],
-                ),
-              ],
-            ),
+              ),
+
+              _OverlayAction(
+                icon: Icons.photo_camera_outlined,
+                label: 'Foto',
+                onTap: onTakePhoto,
+              ),
+              _OverlayAction(
+                icon: Icons.sos,
+                label: 'SOS',
+                active: true,
+                activeColor: const Color(0xFFFF3B3B),
+                onTap: onSos,
+              ),
+            ],
           ),
         ],
       ),
@@ -700,8 +601,10 @@ class PttTab extends StatelessWidget {
     required this.signalWeak,
     required this.talkTimeLabel,
     required this.isTalking,
+    required this.isConnected,
     required this.onSelectChannel,
-    required this.onToggleTalk,
+    required this.onPttPress,
+    required this.onPttRelease,
   });
 
   final List<PttChannel> channels;
@@ -712,8 +615,10 @@ class PttTab extends StatelessWidget {
   final bool signalWeak;
   final String talkTimeLabel;
   final bool isTalking;
+  final bool isConnected;
   final ValueChanged<String> onSelectChannel;
-  final VoidCallback onToggleTalk;
+  final VoidCallback onPttPress;
+  final VoidCallback onPttRelease;
 
   @override
   Widget build(BuildContext context) {
@@ -1000,9 +905,9 @@ class PttTab extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(10, 6, 10, 14),
             child: Center(
               child: GestureDetector(
-                onTapDown: (_) => onToggleTalk(),
-                onTapUp: (_) => onToggleTalk(),
-                onTapCancel: onToggleTalk,
+                onTapDown: (_) => onPttPress(),
+                onTapUp: (_) => onPttRelease(),
+                onTapCancel: onPttRelease,
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 180),
                   width: 228,
@@ -1450,6 +1355,63 @@ class ReportTab extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _OverlayAction extends StatelessWidget {
+  const _OverlayAction({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.active = false,
+    this.activeColor = const Color(0xFFFF6B6B),
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool active;
+  final Color activeColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: active
+                  ? activeColor.withValues(alpha: 0.25)
+                  : Colors.black.withValues(alpha: 0.45),
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: active
+                    ? activeColor.withValues(alpha: 0.7)
+                    : Colors.white.withValues(alpha: 0.2),
+              ),
+            ),
+            child: Icon(
+              icon,
+              color: active ? activeColor : Colors.white,
+              size: 22,
+            ),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            label,
+            style: TextStyle(
+              color: active ? activeColor : Colors.white70,
+              fontSize: 10.5,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

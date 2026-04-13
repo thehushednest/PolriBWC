@@ -244,6 +244,78 @@ class IncidentReport {
   }
 }
 
+class SosAlert {
+  const SosAlert({
+    required this.id,
+    required this.officerId,
+    required this.officerName,
+    required this.deviceId,
+    required this.channelId,
+    required this.status,
+    required this.triggeredAtIso,
+    required this.locationLabel,
+    required this.source,
+    this.latitude,
+    this.longitude,
+    this.recordingId = '',
+    this.targetOfficerId = '',
+    this.notes = '',
+  });
+
+  final String id;
+  final String officerId;
+  final String officerName;
+  final String deviceId;
+  final String channelId;
+  final String status;
+  final String triggeredAtIso;
+  final String locationLabel;
+  final String source;
+  final double? latitude;
+  final double? longitude;
+  final String recordingId;
+  final String targetOfficerId;
+  final String notes;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'officerId': officerId,
+      'officerName': officerName,
+      'deviceId': deviceId,
+      'channelId': channelId,
+      'status': status,
+      'triggeredAtIso': triggeredAtIso,
+      'locationLabel': locationLabel,
+      'source': source,
+      'latitude': latitude,
+      'longitude': longitude,
+      'recordingId': recordingId,
+      'targetOfficerId': targetOfficerId,
+      'notes': notes,
+    };
+  }
+
+  factory SosAlert.fromJson(Map<String, dynamic> json) {
+    return SosAlert(
+      id: json['id'] as String? ?? '',
+      officerId: json['officerId'] as String? ?? '',
+      officerName: json['officerName'] as String? ?? '',
+      deviceId: json['deviceId'] as String? ?? '',
+      channelId: json['channelId'] as String? ?? '',
+      status: json['status'] as String? ?? 'new',
+      triggeredAtIso: json['triggeredAtIso'] as String? ?? '',
+      locationLabel: json['locationLabel'] as String? ?? 'Lokasi tidak tersedia',
+      source: json['source'] as String? ?? 'app',
+      latitude: (json['latitude'] as num?)?.toDouble(),
+      longitude: (json['longitude'] as num?)?.toDouble(),
+      recordingId: json['recordingId'] as String? ?? '',
+      targetOfficerId: json['targetOfficerId'] as String? ?? '',
+      notes: json['notes'] as String? ?? '',
+    );
+  }
+}
+
 class PttChannel {
   const PttChannel({
     required this.id,
@@ -343,5 +415,55 @@ class PresenceEntry {
     final compact = username.replaceAll(RegExp(r'[^A-Za-z0-9]'), '');
     if (compact.length <= 2) return compact.toUpperCase();
     return compact.substring(0, 2).toUpperCase();
+  }
+}
+
+class LiveStreamSession {
+  const LiveStreamSession({
+    required this.sessionId,
+    required this.officerId,
+    required this.officerName,
+    required this.deviceId,
+    required this.status,
+    required this.startedAtIso,
+    required this.locationLabel,
+    this.channelId = '',
+    this.latitude,
+    this.longitude,
+    this.lastFrameAtIso = '',
+    this.frameDataUrl = '',
+    this.frameCount = 0,
+  });
+
+  final String sessionId;
+  final String officerId;
+  final String officerName;
+  final String deviceId;
+  final String status;
+  final String startedAtIso;
+  final String locationLabel;
+  final String channelId;
+  final double? latitude;
+  final double? longitude;
+  final String lastFrameAtIso;
+  final String frameDataUrl;
+  final int frameCount;
+
+  factory LiveStreamSession.fromJson(Map<String, dynamic> json) {
+    return LiveStreamSession(
+      sessionId: json['sessionId'] as String? ?? '',
+      officerId: json['officerId'] as String? ?? '',
+      officerName: json['officerName'] as String? ?? '',
+      deviceId: json['deviceId'] as String? ?? '',
+      status: json['status'] as String? ?? 'idle',
+      startedAtIso: json['startedAtIso'] as String? ?? '',
+      locationLabel: json['locationLabel'] as String? ?? 'Lokasi tidak tersedia',
+      channelId: json['channelId'] as String? ?? '',
+      latitude: (json['latitude'] as num?)?.toDouble(),
+      longitude: (json['longitude'] as num?)?.toDouble(),
+      lastFrameAtIso: json['lastFrameAtIso'] as String? ?? '',
+      frameDataUrl: json['frameDataUrl'] as String? ?? '',
+      frameCount: json['frameCount'] as int? ?? 0,
+    );
   }
 }

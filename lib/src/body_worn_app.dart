@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:camera/camera.dart';
@@ -7,11 +8,15 @@ import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:battery_plus/battery_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api_client.dart';
 import 'app_config.dart';
+import 'backend_gateway.dart';
 import 'models.dart';
 import 'navigation.dart';
+import 'polri_backend_api.dart';
 import 'storage.dart';
 import 'tabs_primary.dart';
 import 'tabs_secondary.dart';
@@ -122,6 +127,10 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   DateTime? _recordingStartedAt;
   Timer? _ticker;
   Timer? _presenceTimer;
+  Timer? _pttRefreshTimer;
+  Timer? _sosPollTimer;
+  Timer? _liveFrameTimer;
+  Timer? _liveRefreshTimer;
   String _selectedGalleryFilter = 'Semua';
   String _selectedReportType = 'Penangkapan';
   String? _selectedRecordingId;
@@ -129,17 +138,34 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   CameraController? _cameraController;
   CameraDescription? _rearCamera;
   bool _isFlashOn = false;
-  final bool _isBlackoutActive = false;
+  bool _isBlackoutActive = false;
+  bool _isProximityNear = false;
+  final Battery _battery = Battery();
+  int _batteryPercent = 100;
   String _selectedTag = 'Penangkapan';
   bool _isTalking = false;
+  bool _isPttConnected = false;
   String _selectedPttChannelId = 'ch1';
-  final int _batteryPercent = 87;
+  String? _pttTalkingChannelId;
+  DateTime? _pttStartedAt;
+  List<PttTransmission> _pttFeed = const [];
+  List<SosAlert> _sosAlerts = const [];
   List<IncidentReport> _incidentReports = const [];
+  final Set<String> _seenSosAlertIds = <String>{};
+  String? _activeSosDialogId;
+  String? _activeLiveSessionId;
+  bool _isSendingLiveFrame = false;
+  int _liveFrameCount = 0;
+  String _liveFrameStatus = 'Belum ada frame live';
+  late final BackendGateway _backend;
+
+  static const _kDeviceChannel = MethodChannel('polri_bwc/device');
 
   final List<PttChannel> _pttChannels = const [
-    PttChannel(id: 'ch1', label: 'CH-1 Patroli', subtitle: 'Kanal utama'),
-    PttChannel(id: 'ch2', label: 'CH-2 Komando', subtitle: 'Pimpinan'),
-    PttChannel(id: 'ch3', label: 'CH-3 Darurat', subtitle: 'Prioritas SOS'),
+    PttChannel(id: 'ch1', label: 'Ch 1', subtitle: ''),
+    PttChannel(id: 'ch2', label: 'Ch 2', subtitle: ''),
+    PttChannel(id: 'ch3', label: 'Ch 3', subtitle: ''),
+    PttChannel(id: 'ch4', label: 'Ch 4', subtitle: ''),
   ];
 
   final List<String> _recordingTags = const [
@@ -161,7 +187,13 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       initials: entry.initials,
       name: entry.username,
       detail: detail,
-      status: entry.isTalking ? 'PTT' : isRecording ? 'Rec' : entry.resolvedStatus == 'online' ? 'Standby' : 'Offline',
+      status: entry.isTalking
+          ? 'PTT'
+          : isRecording
+              ? 'Live'
+              : entry.resolvedStatus == 'online'
+                  ? 'Standby'
+                  : 'Offline',
       statusColor: entry.isTalking
           ? const Color(0xFFFF6A6A)
           : isRecording
@@ -178,15 +210,413 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   @override
   void initState() {
     super.initState();
+    _backend = PolriBackendApi(config: AppConfig.fromEnvironment());
     WidgetsBinding.instance.addObserver(this);
     _initialize();
+    // Proximity sensor dinonaktifkan sementara.
+    // _startProximitySensor();
+    _kDeviceChannel.setMethodCallHandler(_onNativeDeviceEvent);
+  }
+
+  /// Handles events pushed from MainActivity via MethodChannel.
+  Future<void> _onNativeDeviceEvent(MethodCall call) async {
+    switch (call.method) {
+      case 'proximityChanged':
+        final arguments = Map<String, dynamic>.from(
+          (call.arguments as Map?)?.cast<String, dynamic>() ?? const {},
+        );
+        final near = arguments['near'] as bool? ?? false;
+        _handleProximityChanged(near);
+        return;
+      case 'hardwarePtt':
+        final arguments = Map<String, dynamic>.from(
+          (call.arguments as Map?)?.cast<String, dynamic>() ?? const {},
+        );
+        final state = arguments['state'] as String?;
+        if (state == 'down' && !_isTalking) {
+          await _startNativePtt();
+        } else if (state == 'up' && _isTalking) {
+          await _stopNativePtt();
+        }
+    }
+  }
+
+  bool get _canUseBlackout {
+    final cameraReady = _cameraController?.value.isInitialized == true;
+    return _currentTab == BodyWornTab.record && (cameraReady || _isRecording);
+  }
+
+  void _handleProximityChanged(bool near) {
+    _isProximityNear = near;
+    final shouldBlackout = near && _canUseBlackout;
+    if (!mounted || _isBlackoutActive == shouldBlackout) {
+      return;
+    }
+    setState(() {
+      _isBlackoutActive = shouldBlackout;
+    });
+  }
+
+  void _syncBlackoutState() {
+    final shouldBlackout = _isProximityNear && _canUseBlackout;
+    if (!mounted || _isBlackoutActive == shouldBlackout) {
+      return;
+    }
+    setState(() {
+      _isBlackoutActive = shouldBlackout;
+    });
+  }
+
+  Future<void> _startNativePtt() async {
+    if (_isTalking) return;
+    final session = _session;
+    if (session == null) return;
+    if (_isMuted) {
+      _showMessage('Audio PTT sedang dimatikan. Aktifkan audio untuk transmit.');
+      return;
+    }
+    final talkChannelId = _selectedPttChannelId;
+    final result = await _backend.startPttTransmit(
+      channelId: talkChannelId,
+      officerId: session.nrp,
+      deviceId: 'android_${session.nrp}',
+    );
+    if (!result.granted) {
+      if (result.message.isNotEmpty) {
+        _showMessage(result.message);
+      }
+      await _refreshPttData();
+      return;
+    }
+
+    try {
+      await _kDeviceChannel.invokeMethod('startNativePtt');
+      if (mounted) {
+        setState(() {
+          _isTalking = true;
+          _pttTalkingChannelId = talkChannelId;
+          _pttStartedAt = DateTime.now();
+        });
+      }
+      await _updateNotification();
+      await _sendPresenceHeartbeat();
+      await _refreshPttData();
+    } catch (_) {
+      await _backend.stopPttTransmit(
+        channelId: talkChannelId,
+        officerId: session.nrp,
+        durationSeconds: 0,
+      );
+    }
+  }
+
+  Future<void> _stopNativePtt() async {
+    if (!_isTalking) return;
+    final session = _session;
+    final talkChannelId = _pttTalkingChannelId ?? _selectedPttChannelId;
+    final startedAt = _pttStartedAt;
+    final durationSeconds = startedAt == null
+        ? 0
+        : DateTime.now().difference(startedAt).inSeconds;
+
+    try {
+      await _kDeviceChannel.invokeMethod('stopNativePtt');
+    } catch (_) {}
+
+    if (mounted) {
+      setState(() {
+        _isTalking = false;
+        _pttTalkingChannelId = null;
+        _pttStartedAt = null;
+      });
+    }
+
+    await _updateNotification();
+
+    if (session != null) {
+      await _backend.stopPttTransmit(
+        channelId: talkChannelId,
+        officerId: session.nrp,
+        durationSeconds: durationSeconds,
+      );
+      await _sendPresenceHeartbeat();
+      await _refreshPttData();
+    }
+  }
+
+  Future<void> _refreshPttData() async {
+    final activeChannelId = _pttTalkingChannelId ?? _selectedPttChannelId;
+    final presence = await _backend.loadPresence(
+      channelId: _currentTab == BodyWornTab.ptt ? activeChannelId : null,
+    );
+    final feed = await _backend.loadPttFeed(channelId: activeChannelId);
+    if (!mounted) return;
+    setState(() {
+      _presenceEntries = presence;
+      _pttFeed = feed;
+    });
+  }
+
+  Future<void> _refreshSosAlerts({bool notifyIncoming = false}) async {
+    final alerts = await _backend.loadSosAlerts();
+    if (!mounted) return;
+    final session = _session;
+    final incoming = notifyIncoming && session != null
+        ? alerts
+            .where(
+              (alert) =>
+                  !_seenSosAlertIds.contains(alert.id) &&
+                  alert.officerId != session.nrp,
+            )
+            .toList()
+        : const <SosAlert>[];
+    setState(() {
+      _sosAlerts = alerts;
+    });
+    _seenSosAlertIds.addAll(alerts.map((item) => item.id));
+    for (final alert in incoming.reversed) {
+      _announceIncomingSos(alert);
+    }
+  }
+
+  Future<void> _refreshLiveSessions() async {
+    final sessions = await _backend.loadLiveSessions();
+    if (!mounted) return;
+    final activeSession = _activeLiveSessionId == null
+        ? null
+        : sessions.where((item) => item.sessionId == _activeLiveSessionId).firstOrNull;
+    setState(() {
+      if (activeSession != null) {
+        _liveFrameCount = activeSession.frameCount;
+        _liveFrameStatus = activeSession.frameCount == 0
+            ? 'Menunggu frame live...'
+            : 'Frame ${activeSession.frameCount} · ${_compactTimeFormat.format(DateTime.tryParse(activeSession.lastFrameAtIso)?.toLocal() ?? DateTime.now())}';
+      }
+    });
+  }
+
+  void _startSosPolling() {
+    _sosPollTimer?.cancel();
+    _sosPollTimer = Timer.periodic(
+      const Duration(seconds: 4),
+      (_) => unawaited(_refreshSosAlerts(notifyIncoming: true)),
+    );
+  }
+
+  void _announceIncomingSos(SosAlert alert) {
+    SystemSound.play(SystemSoundType.alert);
+    HapticFeedback.heavyImpact();
+    HapticFeedback.vibrate();
+    if (!mounted || _activeSosDialogId == alert.id) {
+      return;
+    }
+    _activeSosDialogId = alert.id;
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: true,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: const Text('SOS Masuk'),
+            content: Text(
+              '${alert.officerName.isEmpty ? alert.officerId : alert.officerName}\n'
+              'Channel: ${alert.channelId.isEmpty ? '-' : alert.channelId.toUpperCase()}\n'
+              'Lokasi: ${alert.locationLabel}',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('Tutup'),
+              ),
+            ],
+          );
+        },
+      ).whenComplete(() {
+        _activeSosDialogId = null;
+      }),
+    );
+  }
+
+  void _startPttRefreshLoop() {
+    _pttRefreshTimer?.cancel();
+    _pttRefreshTimer = Timer.periodic(
+      const Duration(seconds: 4),
+      (_) => unawaited(_refreshPttData()),
+    );
+  }
+
+  void _startLiveRefreshLoop() {
+    _liveRefreshTimer?.cancel();
+    _liveRefreshTimer = Timer.periodic(
+      const Duration(seconds: 4),
+      (_) => unawaited(_refreshLiveSessions()),
+    );
+  }
+
+  String _pttTalkTimeLabel() {
+    if (!_isTalking || _pttStartedAt == null) {
+      return '00:00';
+    }
+    final elapsed = DateTime.now().difference(_pttStartedAt!);
+    final minutes = elapsed.inMinutes.toString().padLeft(2, '0');
+    final seconds = (elapsed.inSeconds % 60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
+  }
+
+  Future<void> _handleRecordScreenPtt() async {
+    if (_isTalking) {
+      await _stopNativePtt();
+      return;
+    }
+    await _startNativePtt();
+  }
+
+  Future<void> _selectPttChannel(String id) async {
+    if (_isTalking) {
+      _showMessage('Channel tidak bisa diganti saat sedang transmit.');
+      return;
+    }
+    setState(() => _selectedPttChannelId = id);
+    try {
+      await _kDeviceChannel.invokeMethod('updatePttChannel', {'channelId': id});
+    } catch (_) {}
+    await _updateNotification();
+    await _sendPresenceHeartbeat();
+    await _refreshPttData();
+  }
+
+  Future<void> _connectNativePtt(OfficerSession session) async {
+    try {
+      final config = AppConfig.fromEnvironment();
+      await _kDeviceChannel.invokeMethod('configurePttAudio', {
+        'host': config.apiHost,
+        'port': config.pttAudioPort,
+        'username': session.nrp,
+        'channelId': _selectedPttChannelId,
+        'deviceId': 'android_${session.nrp}',
+      });
+      await _kDeviceChannel.invokeMethod('startPersistentMode');
+      if (mounted) setState(() => _isPttConnected = true);
+      await _updateNotification();
+      await _refreshPttData();
+    } catch (_) {}
+  }
+
+  Future<void> _disconnectNativePtt() async {
+    if (_isTalking) {
+      await _stopNativePtt();
+    }
+    try {
+      await _kDeviceChannel.invokeMethod('disconnectPttAudio');
+      await _kDeviceChannel.invokeMethod('stopPersistentMode');
+    } catch (_) {}
+    if (mounted) setState(() => _isPttConnected = false);
+  }
+
+  Future<void> _toggleAudioMute() async {
+    final nextMuted = !_isMuted;
+    if (_isTalking && nextMuted) {
+      await _stopNativePtt();
+    }
+    if (!mounted) return;
+    setState(() {
+      _isMuted = nextMuted;
+    });
+    await _updateNotification();
+    _showMessage(
+      nextMuted
+          ? 'Audio PTT dimatikan. Tombol bicara tidak akan transmit.'
+          : 'Audio PTT diaktifkan kembali.',
+    );
+  }
+
+  Future<void> _applyFlashMode() async {
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) {
+      return;
+    }
+    try {
+      await controller.setFlashMode(_isFlashOn ? FlashMode.torch : FlashMode.off);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _isFlashOn = false;
+      });
+      _showMessage('Torch kamera tidak tersedia: $error');
+    }
+  }
+
+  Future<void> _toggleFlash() async {
+    await _ensureCameraReady();
+    if (_cameraController?.value.isInitialized != true) {
+      _showMessage('Kamera belum siap untuk mengaktifkan flash.');
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _isFlashOn = !_isFlashOn;
+    });
+    await _applyFlashMode();
+    _showMessage(_isFlashOn ? 'Flash bodyworn aktif.' : 'Flash bodyworn dimatikan.');
+  }
+
+  Future<void> _captureSnapshot() async {
+    if (_session == null) return;
+    await _ensureCameraReady();
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) {
+      _showMessage('Kamera belum siap untuk mengambil foto.');
+      return;
+    }
+    if (controller.value.isTakingPicture) {
+      _showMessage('Snapshot sedang diproses.');
+      return;
+    }
+
+    try {
+      final captured = await controller.takePicture();
+      final storedPath = await _storage.persistPhoto(captured);
+      _showMessage('Snapshot tersimpan di $storedPath');
+    } catch (error) {
+      _showMessage('Gagal mengambil snapshot: $error');
+    }
+  }
+
+  Future<void> _updateNotification() async {
+    final activeChannelId = _pttTalkingChannelId ?? _selectedPttChannelId;
+    final channelLabel = _pttChannels
+        .where((c) => c.id == activeChannelId)
+        .map((c) => c.label)
+        .firstOrNull ?? activeChannelId.toUpperCase();
+    try {
+      await _kDeviceChannel.invokeMethod('updatePersistentNotification', {
+        'status': _isTalking ? 'TRANSMITTING' : 'Standby',
+        'channel': channelLabel,
+      });
+    } catch (_) {}
   }
 
   @override
   void dispose() {
+    final session = _session;
+    final liveSessionId = _activeLiveSessionId;
+    _kDeviceChannel.setMethodCallHandler(null);
     WidgetsBinding.instance.removeObserver(this);
     _ticker?.cancel();
     _presenceTimer?.cancel();
+    _pttRefreshTimer?.cancel();
+    _liveRefreshTimer?.cancel();
+    _sosPollTimer?.cancel();
+    _liveFrameTimer?.cancel();
+    if (session != null && liveSessionId != null) {
+      unawaited(
+        _backend.stopLiveStream(
+          sessionId: liveSessionId,
+          officerId: session.nrp,
+        ),
+      );
+    }
+    unawaited(_disconnectNativePtt());
     _cameraController?.dispose();
     _nrpController.dispose();
     _passwordController.dispose();
@@ -199,18 +629,43 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final controller = _cameraController;
-    if (controller == null || _currentTab != BodyWornTab.record) {
-      return;
-    }
     if (state == AppLifecycleState.inactive) {
-      controller.dispose();
-      _cameraController = null;
+      if (!_isRecording && controller != null && _currentTab == BodyWornTab.record) {
+        controller.dispose();
+        _cameraController = null;
+      }
     } else if (state == AppLifecycleState.resumed) {
-      unawaited(_ensureCameraReady());
+      if (_session != null) {
+        unawaited(_connectNativePtt(_session!));
+        unawaited(_refreshPttData());
+      }
+      if (_currentTab == BodyWornTab.record) {
+        unawaited(_ensureCameraReady());
+      }
+      _syncBlackoutState();
     }
   }
 
+  static const _sessionPrefsKey = 'officer_session_v1';
+
   Future<void> _initialize() async {
+    final prefs = await SharedPreferences.getInstance();
+    final sessionRaw = prefs.getString(_sessionPrefsKey);
+    OfficerSession? restoredSession;
+    if (sessionRaw != null) {
+      try {
+        final data = jsonDecode(sessionRaw) as Map<String, dynamic>;
+        restoredSession = OfficerSession(
+          nrp: data['nrp'] as String,
+          officerName: data['officerName'] as String,
+          rankLabel: data['rankLabel'] as String? ?? '',
+          unitName: data['unitName'] as String? ?? '',
+          shiftLabel: data['shiftLabel'] as String? ?? '',
+          shiftWindow: data['shiftWindow'] as String? ?? '',
+        );
+      } catch (_) {}
+    }
+
     final results = await [
       Permission.camera,
       Permission.microphone,
@@ -225,13 +680,35 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       ).compareTo(DateTime.parse(a.recordedAtIso)),
     );
 
+    int batteryLevel = 100;
+    try {
+      batteryLevel = await _battery.batteryLevel;
+    } catch (_) {}
+
     if (!mounted) return;
     setState(() {
+      _session = restoredSession;
       _permissions = PermissionSummary.fromStatuses(results);
       _recordings = combined;
       _selectedRecordingId = combined.isNotEmpty ? combined.first.id : null;
+      _batteryPercent = batteryLevel;
       _isInitializing = false;
     });
+
+    if (restoredSession != null) {
+      unawaited(_connectNativePtt(restoredSession));
+      unawaited(_sendPresenceHeartbeat());
+      unawaited(_refreshSosAlerts());
+      unawaited(_refreshLiveSessions());
+      _startPttRefreshLoop();
+      _startSosPolling();
+      _startLiveRefreshLoop();
+      _presenceTimer?.cancel();
+      _presenceTimer = Timer.periodic(
+        const Duration(seconds: 15),
+        (_) => unawaited(_sendPresenceHeartbeat()),
+      );
+    }
   }
 
   Future<void> _ensureCameraReady() async {
@@ -264,6 +741,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       );
       await controller.initialize();
       await controller.lockCaptureOrientation(DeviceOrientation.portraitUp);
+      await controller.setFlashMode(_isFlashOn ? FlashMode.torch : FlashMode.off);
       if (!mounted) {
         await controller.dispose();
         return;
@@ -272,6 +750,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       setState(() {
         _cameraController = controller;
       });
+      _syncBlackoutState();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -288,9 +767,16 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
 
   // Kredensial fallback untuk digunakan saat server tidak tersedia.
   static const _localUsers = {
-    'test1': (name: 'Test Satu', rank: 'Bripda', unit: 'Satuan Alpha', shift: 'Shift Pagi Aktif', window: '07:00–15:00', pass: 'test1'),
-    'test2': (name: 'Test Dua', rank: 'Briptu', unit: 'Satuan Bravo', shift: 'Shift Siang Aktif', window: '15:00–23:00', pass: 'test2'),
-    'test3': (name: 'Test Tiga', rank: 'Ipda', unit: 'Satuan Charlie', shift: 'Shift Malam Aktif', window: '23:00–07:00', pass: 'test3'),
+    'test1': (name: 'Test Satu', rank: '', unit: 'Satuan Alpha', shift: 'Shift Pagi Aktif', window: '07:00–15:00', pass: 'test1'),
+    'test2': (name: 'Test Dua', rank: '', unit: 'Satuan Bravo', shift: 'Shift Siang Aktif', window: '15:00–23:00', pass: 'test2'),
+    'test3': (name: 'Test Tiga', rank: '', unit: 'Satuan Charlie', shift: 'Shift Malam Aktif', window: '23:00–07:00', pass: 'test3'),
+    'test4': (name: 'Test Empat', rank: '', unit: 'Satuan Delta', shift: 'Shift Pagi Aktif', window: '07:00–15:00', pass: 'test4'),
+    'test5': (name: 'Test Lima', rank: '', unit: 'Satuan Echo', shift: 'Shift Siang Aktif', window: '15:00–23:00', pass: 'test5'),
+    'test6': (name: 'Test Enam', rank: '', unit: 'Satuan Foxtrot', shift: 'Shift Malam Aktif', window: '23:00–07:00', pass: 'test6'),
+    'test7': (name: 'Test Tujuh', rank: '', unit: 'Satuan Golf', shift: 'Shift Pagi Aktif', window: '07:00–15:00', pass: 'test7'),
+    'test8': (name: 'Test Delapan', rank: '', unit: 'Satuan Hotel', shift: 'Shift Siang Aktif', window: '15:00–23:00', pass: 'test8'),
+    'test9': (name: 'Test Sembilan', rank: '', unit: 'Satuan India', shift: 'Shift Malam Aktif', window: '23:00–07:00', pass: 'test9'),
+    'test10': (name: 'Test Sepuluh', rank: '', unit: 'Satuan Juliet', shift: 'Shift Pagi Aktif', window: '07:00–15:00', pass: 'test10'),
   };
 
   Future<void> _activateSession() async {
@@ -349,12 +835,32 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       );
     }
 
+    // Simpan sesi ke persistent storage agar tidak logout saat hp dikunci.
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _sessionPrefsKey,
+      jsonEncode({
+        'nrp': session.nrp,
+        'officerName': session.officerName,
+        'rankLabel': session.rankLabel,
+        'unitName': session.unitName,
+        'shiftLabel': session.shiftLabel,
+        'shiftWindow': session.shiftWindow,
+      }),
+    );
+
     setState(() {
       _session = session;
       _currentTab = BodyWornTab.home;
     });
     _showMessage('Login berhasil. Perangkat siap bertugas.');
+    unawaited(_connectNativePtt(session));
     unawaited(_sendPresenceHeartbeat());
+    unawaited(_refreshSosAlerts());
+    unawaited(_refreshLiveSessions());
+    _startPttRefreshLoop();
+    _startSosPolling();
+    _startLiveRefreshLoop();
     _presenceTimer?.cancel();
     _presenceTimer = Timer.periodic(
       const Duration(seconds: 15),
@@ -376,42 +882,65 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       );
     } catch (_) {}
 
+    int? freshBattery;
+    try {
+      freshBattery = await _battery.batteryLevel;
+    } catch (_) {}
+
     if (mounted) {
       setState(() {
         _currentLat = position?.latitude;
         _currentLng = position?.longitude;
+        if (freshBattery != null) _batteryPercent = freshBattery;
       });
     }
 
-    try {
-      final config = AppConfig.fromEnvironment();
-      final client = ApiClient(
-        baseUrl: config.rootUrl,
-        timeout: Duration(seconds: config.connectTimeoutSeconds),
-      );
-      await client.postJson('/presence/heartbeat', {
-        'username': session.nrp,
-        'deviceId': 'android_${session.nrp}',
-        'status': _isRecording ? 'recording' : 'online',
-        'activeChannelId': _selectedPttChannelId,
-        'clientTimeIso': DateTime.now().toUtc().toIso8601String(),
-        if (position != null) 'latitude': position.latitude,
-        if (position != null) 'longitude': position.longitude,
-      });
-
-      final raw = await client.getJson('/presence');
-      if (raw is List && mounted) {
-        final entries = raw
-            .map((item) => PresenceEntry.fromJson(item as Map<String, dynamic>))
-            .toList();
-        setState(() => _presenceEntries = entries);
-      }
-    } catch (_) {}
+    await _backend.updatePresence(
+      username: session.nrp,
+      deviceId: 'android_${session.nrp}',
+      status: _isTalking
+          ? 'ptt'
+          : _isRecording
+              ? 'live'
+              : 'online',
+      activeChannelId: _pttTalkingChannelId ?? _selectedPttChannelId,
+      latitude: position?.latitude,
+      longitude: position?.longitude,
+    );
+    await _refreshPttData();
   }
 
   void _logout() {
+    final session = _session;
+    final liveSessionId = _activeLiveSessionId;
+    SharedPreferences.getInstance().then((prefs) => prefs.remove(_sessionPrefsKey));
+    _pttRefreshTimer?.cancel();
+    _liveRefreshTimer?.cancel();
+    _sosPollTimer?.cancel();
+    if (session != null) {
+      if (liveSessionId != null) {
+        unawaited(
+          _backend.stopLiveStream(
+            sessionId: liveSessionId,
+            officerId: session.nrp,
+          ),
+        );
+      }
+      unawaited(
+        _backend.updatePresence(
+          username: session.nrp,
+          deviceId: 'android_${session.nrp}',
+          status: 'offline',
+          activeChannelId: _pttTalkingChannelId ?? _selectedPttChannelId,
+          latitude: _currentLat,
+          longitude: _currentLng,
+        ),
+      );
+    }
+    unawaited(_disconnectNativePtt());
     _ticker?.cancel();
     _presenceTimer?.cancel();
+    _liveFrameTimer?.cancel();
     _cameraController?.dispose();
     setState(() {
       _session = null;
@@ -422,9 +951,23 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       _cameraController = null;
       _cameraError = null;
       _presenceEntries = const [];
+      _pttFeed = const [];
+      _sosAlerts = const [];
+      _pttTalkingChannelId = null;
+      _pttStartedAt = null;
+      _isTalking = false;
+      _isPttConnected = false;
+      _isBlackoutActive = false;
+      _isProximityNear = false;
+      _activeLiveSessionId = null;
+      _isSendingLiveFrame = false;
+      _liveFrameCount = 0;
+      _liveFrameStatus = 'Belum ada frame live';
       _currentLat = null;
       _currentLng = null;
     });
+    _seenSosAlertIds.clear();
+    _activeSosDialogId = null;
   }
 
   Future<void> _startRecordingMode() async {
@@ -439,6 +982,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       _permissions = PermissionSummary.fromStatuses(results);
       _currentTab = BodyWornTab.record;
     });
+    _syncBlackoutState();
 
     if (!results[Permission.camera]!.isGranted ||
         !results[Permission.microphone]!.isGranted) {
@@ -454,18 +998,24 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       );
       return;
     }
-    if (controller.value.isRecordingVideo) {
+    if (_isRecording) {
       return;
     }
-
-    try {
-      await controller.prepareForVideoRecording();
-    } catch (_) {}
-
-    try {
-      await controller.startVideoRecording();
-    } catch (error) {
-      _showMessage('Gagal memulai rekaman: $error');
+    final session = _session!;
+    final location = await _resolveLocation();
+    final liveSession = await _backend.startLiveStream(
+      officerId: session.nrp,
+      officerName: session.fullName,
+      deviceId: 'android_${session.nrp}',
+      channelId: _selectedPttChannelId,
+      latitude: location?.latitude,
+      longitude: location?.longitude,
+      locationLabel: location == null
+          ? 'Lokasi belum tersedia'
+          : 'Lat ${location.latitude.toStringAsFixed(4)}, Lng ${location.longitude.toStringAsFixed(4)}',
+    );
+    if (liveSession == null) {
+      _showMessage('Gagal membuka sesi live ke server.');
       return;
     }
 
@@ -474,73 +1024,128 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       _isRecording = true;
       _isMuted = false;
       _recordingStartedAt = DateTime.now();
+      _activeLiveSessionId = liveSession.sessionId;
+      _liveFrameCount = 0;
+      _liveFrameStatus = 'Menghubungkan Live Cam...';
     });
+    _syncBlackoutState();
+    await _sendPresenceHeartbeat();
+    await _refreshLiveSessions();
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
+    _liveFrameTimer?.cancel();
+    Future<void>.delayed(
+      const Duration(milliseconds: 900),
+      () => _pushLiveFrame(),
+    );
+    _liveFrameTimer = Timer.periodic(
+      const Duration(milliseconds: 2000),
+      (_) => unawaited(_pushLiveFrame()),
+    );
+    _showMessage('Live Cam aktif. Stream dikirim ke dashboard server.');
   }
 
   Future<void> _finishRecordingMode() async {
     if (!_isRecording) return;
     _ticker?.cancel();
+    _liveFrameTimer?.cancel();
     try {
-      final controller = _cameraController;
-      if (controller == null ||
-          !controller.value.isInitialized ||
-          !controller.value.isRecordingVideo) {
-        throw Exception('Rekaman tidak aktif pada kamera');
+      final session = _session;
+      final liveSessionId = _activeLiveSessionId;
+      if (session != null && liveSessionId != null) {
+        await _backend.stopLiveStream(
+          sessionId: liveSessionId,
+          officerId: session.nrp,
+        );
       }
-
-      final captured = await controller.stopVideoRecording();
-      final storedPath = await _storage.persistVideo(captured);
-      final position = await _resolveLocation();
-      final file = File(storedPath);
-      final now = DateTime.now();
-      final duration = _recordingStartedAt == null
-          ? 0
-          : now.difference(_recordingStartedAt!).inSeconds;
-
-      final entry = RecordingEntry(
-        id: 'REC_${DateFormat('yyyyMMdd_HHmmss').format(now)}',
-        officerName: _session!.fullName,
-        unitName: _session!.unitName,
-        recordedAtIso: now.toIso8601String(),
-        filePath: storedPath,
-        latitude: position?.latitude,
-        longitude: position?.longitude,
-        source: 'LIVE_RECORD_CAPTURE',
-        notes: '${_recordingTags.first} - ${_humanDuration(duration)}',
-        status: RecordingUploadStatus.pending,
-        durationSeconds: duration,
-        sizeBytes: await file.length(),
-        locationLabel: position == null
-            ? 'Lokasi belum tersedia'
-            : 'Lat ${position.latitude.toStringAsFixed(4)}, Lng ${position.longitude.toStringAsFixed(4)}',
-        tagLabel: _recordingTags.first,
-        isSeeded: false,
-      );
-
-      final updated = [entry, ..._recordings];
-      await _storage.saveRecordings(
-        updated.where((item) => !item.isSeeded).toList(),
-      );
 
       if (!mounted) return;
       setState(() {
-        _recordings = updated;
-        _selectedRecordingId = entry.id;
         _isRecording = false;
         _recordingStartedAt = null;
-        _currentTab = BodyWornTab.gallery;
+        _activeLiveSessionId = null;
+        _liveFrameStatus = 'Live Cam selesai';
       });
-      _showMessage('Rekaman berhasil disimpan dan masuk galeri.');
+      await _sendPresenceHeartbeat();
+      await _refreshLiveSessions();
+      _syncBlackoutState();
+      _showMessage('Live Cam dihentikan. Monitoring server selesai.');
     } catch (error) {
       if (!mounted) return;
       setState(() {
         _isRecording = false;
         _recordingStartedAt = null;
+        _activeLiveSessionId = null;
+        _liveFrameStatus = 'Live Cam gagal dihentikan';
       });
-      _showMessage('Gagal menyimpan rekaman: $error');
+      await _refreshLiveSessions();
+      _syncBlackoutState();
+      _showMessage('Gagal menghentikan live stream: $error');
+    }
+  }
+
+  Future<void> _pushLiveFrame() async {
+    final controller = _cameraController;
+    final session = _session;
+    final liveSessionId = _activeLiveSessionId;
+    if (!_isRecording ||
+        _isSendingLiveFrame ||
+        controller == null ||
+        !controller.value.isInitialized ||
+        controller.value.isTakingPicture ||
+        session == null ||
+        liveSessionId == null) {
+      return;
+    }
+
+    _isSendingLiveFrame = true;
+    try {
+      if (mounted) {
+        setState(() {
+          _liveFrameStatus = _liveFrameCount == 0
+              ? 'Mengambil frame pertama...'
+              : 'Mengirim frame ${_liveFrameCount + 1}...';
+        });
+      }
+      final captured = await controller.takePicture();
+      final bytes = await captured.readAsBytes();
+      if (bytes.isEmpty) {
+        throw Exception('Frame kamera kosong');
+      }
+      final dataUrl = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+      final file = File(captured.path);
+      if (await file.exists()) {
+        await file.delete();
+      }
+      await _backend.pushLiveFrame(
+        sessionId: liveSessionId,
+        officerId: session.nrp,
+        frameDataUrl: dataUrl,
+        latitude: _currentLat,
+        longitude: _currentLng,
+        locationLabel: _currentLat == null
+            ? 'Lokasi belum tersedia'
+            : 'Lat ${_currentLat!.toStringAsFixed(4)}, Lng ${_currentLng!.toStringAsFixed(4)}',
+      );
+      if (mounted) {
+        setState(() {
+          _liveFrameCount += 1;
+          _liveFrameStatus =
+              'Frame $_liveFrameCount terkirim · ${_compactTimeFormat.format(DateTime.now())}';
+        });
+      }
+      if (_liveFrameCount <= 1) {
+        await _refreshLiveSessions();
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _liveFrameStatus = 'Frame gagal: $error';
+        });
+      }
+    } finally {
+      _isSendingLiveFrame = false;
     }
   }
 
@@ -570,7 +1175,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       type: _selectedReportType,
       description: _descriptionController.text.trim(),
       witness: _witnessController.text.trim(),
-      recordingId: _selectedRecordingId ?? '',
+      recordingId: _activeLiveSessionId ?? _selectedRecordingId ?? '',
       recordedAtIso: DateTime.now().toIso8601String(),
       locationLabel:
           _selectedRecording?.locationLabel ?? 'Lokasi tidak tersedia',
@@ -585,6 +1190,39 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     });
   }
 
+  Future<void> _triggerSos({
+    required String source,
+    String targetOfficerId = '',
+    String notes = '',
+  }) async {
+    final session = _session;
+    if (session == null) return;
+    final recordingId = _isRecording ? (_selectedRecordingId ?? '') : '';
+    final alert = await _backend.triggerSos(
+      officerId: session.nrp,
+      officerName: session.fullName.trim(),
+      deviceId: 'android_${session.nrp}',
+      channelId: _pttTalkingChannelId ?? _selectedPttChannelId,
+      source: source,
+      recordingId: recordingId,
+      targetOfficerId: targetOfficerId,
+      latitude: _currentLat,
+      longitude: _currentLng,
+      locationLabel: _currentLat != null && _currentLng != null
+          ? 'Lat ${_currentLat!.toStringAsFixed(5)}, Lng ${_currentLng!.toStringAsFixed(5)}'
+          : 'Lokasi belum tersedia',
+      notes: notes,
+    );
+    await _refreshSosAlerts();
+    if (alert == null) {
+      _showMessage('SOS gagal dikirim.');
+      return;
+    }
+    _showMessage(
+      'SOS ${alert.id} dikirim ke server${targetOfficerId.isEmpty ? '' : ' untuk $targetOfficerId'}. Total alert: ${_sosAlerts.length}.',
+    );
+  }
+
   void _showMessage(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
@@ -597,12 +1235,6 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
 
   String _formatTimeOnly(String iso) =>
       _compactTimeFormat.format(DateTime.parse(iso).toLocal());
-
-  String _humanDuration(int seconds) {
-    final minutes = seconds ~/ 60;
-    final remaining = seconds % 60;
-    return minutes == 0 ? '${remaining}dt' : '${minutes}m ${remaining}dt';
-  }
 
   String _recordingClock() {
     if (_recordingStartedAt == null) return '00:00:00';
@@ -649,6 +1281,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       _recordings.fold(0, (sum, item) => sum + item.sizeBytes);
 
   String get _syncStatusLabel {
+    if (_isRecording || _activeLiveSessionId != null) {
+      return _liveFrameStatus;
+    }
     final pending = _pendingCount;
     return pending == 0
         ? 'Semua rekaman tersinkron'
@@ -682,7 +1317,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       );
     }
 
-    return Scaffold(
+    final scaffold = Scaffold(
       backgroundColor: _currentTab == BodyWornTab.record
           ? const Color(0xFF11141B)
           : const Color(0xFFF4F6FA),
@@ -699,6 +1334,31 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
           ],
         ),
       ),
+    );
+
+    if (!_isBlackoutActive) return scaffold;
+
+    return Stack(
+      children: [
+        scaffold,
+        Positioned.fill(
+          child: AbsorbPointer(
+            child: DecoratedBox(
+              decoration: const BoxDecoration(color: Colors.black),
+              child: Center(
+                child: Text(
+                  'Layar terkunci — jauhkan dari sensor',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.18),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -733,28 +1393,30 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
           recordingDateLabel: DateFormat('dd MMM yyyy').format(
             _recordingStartedAt ?? DateTime.now(),
           ),
-          recordingBytes: _recordings.isEmpty
-              ? 142 * 1024 * 1024
-              : (_recordings.first.sizeBytes + 8 * 1024 * 1024),
-          locationLabel:
-              _selectedRecording?.locationLabel ?? 'Jl. Jend. Sudirman, Jakpus',
-          locationCoords: _selectedRecording == null
-              ? '-6.2088, 106.8456 - +/-4m'
-              : '${(_selectedRecording!.latitude ?? -6.2088).toStringAsFixed(4)}, '
-                    '${(_selectedRecording!.longitude ?? 106.8456).toStringAsFixed(4)} - +/-4m',
+          recordingBytes: _localSizeBytes,
+          locationLabel: _currentLat != null
+              ? 'Lat ${_currentLat!.toStringAsFixed(4)}, Lng ${_currentLng!.toStringAsFixed(4)}'
+              : 'Menunggu GPS...',
+          locationCoords: _currentLat != null
+              ? '${_currentLat!.toStringAsFixed(6)}, ${_currentLng!.toStringAsFixed(6)} · GPS aktif'
+              : 'Menunggu sinyal GPS...',
           syncStatusLabel: _syncStatusLabel,
           pttLabel: _selectedPttChannelId.toUpperCase(),
           selectedTag: _selectedTag,
           tags: _recordingTags,
           onStart: _startRecordingMode,
           onStop: _finishRecordingMode,
-          onToggleMute: () => setState(() => _isMuted = !_isMuted),
-          onToggleFlash: () => setState(() => _isFlashOn = !_isFlashOn),
-          onTakePhoto: () => _showMessage('Snapshot foto diambil.'),
-          onOpenPtt: () => setState(() => _currentTab = BodyWornTab.ptt),
+          onToggleMute: () => unawaited(_toggleAudioMute()),
+          onToggleFlash: () => unawaited(_toggleFlash()),
+          onTakePhoto: () => unawaited(_captureSnapshot()),
+          onOpenPtt: () => unawaited(_handleRecordScreenPtt()),
           onSelectTag: (tag) => setState(() => _selectedTag = tag),
-          onSos: () =>
-              _showMessage('Panic/SOS dikirim ke command center mock.'),
+          onSos: () => unawaited(
+            _triggerSos(
+              source: 'bodyworn',
+              notes: 'SOS dari layar bodyworn',
+            ),
+          ),
         );
       case BodyWornTab.map:
         return MapTab(
@@ -767,22 +1429,33 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
               : 'Menunggu sinyal GPS...',
           onChat: (personnel) =>
               _showMessage('Chat ke ${personnel.name} dibuka.'),
-          onSos: (personnel) =>
-              _showMessage('SOS dikirim ke ${personnel.name}.'),
+          onSos: (personnel) => unawaited(
+            _triggerSos(
+              source: 'map',
+              targetOfficerId: personnel.name,
+              notes: 'SOS dikirim dari tab peta',
+            ),
+          ),
         );
       case BodyWornTab.ptt:
+        final channelUsers = _presenceEntries
+            .where((e) => e.activeChannelId == _selectedPttChannelId)
+            .toList();
         return PttTab(
           channels: _pttChannels,
           selectedChannelId: _selectedPttChannelId,
-          transmissions: const [],
-          onlineUsers: const [],
-          channelStatusLabel: 'Terhubung ke ${_selectedPttChannelId.toUpperCase()}',
-          signalWeak: false,
-          talkTimeLabel: '00:00',
+          transmissions: _pttFeed,
+          onlineUsers: channelUsers,
+          channelStatusLabel: _isPttConnected
+              ? 'Terhubung · ${_pttChannels.where((c) => c.id == _selectedPttChannelId).map((c) => c.label).firstOrNull ?? _selectedPttChannelId.toUpperCase()}'
+              : 'Menghubungkan ke relay...',
+          signalWeak: !_isPttConnected,
+          talkTimeLabel: _pttTalkTimeLabel(),
           isTalking: _isTalking,
-          onSelectChannel: (id) =>
-              setState(() => _selectedPttChannelId = id),
-          onToggleTalk: () => setState(() => _isTalking = !_isTalking),
+          isConnected: _isPttConnected,
+          onSelectChannel: (id) => unawaited(_selectPttChannel(id)),
+          onPttPress: _startNativePtt,
+          onPttRelease: _stopNativePtt,
         );
       case BodyWornTab.gallery:
         return GalleryTab(
@@ -830,6 +1503,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   }
 
   String _cameraStatusText() {
+    if (_isRecording) {
+      return _liveFrameStatus;
+    }
     if (_cameraError != null) {
       return 'Kamera gagal: $_cameraError';
     }
@@ -849,5 +1525,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     if (tab == BodyWornTab.record) {
       await _ensureCameraReady();
     }
+    if (tab == BodyWornTab.ptt) {
+      await _refreshPttData();
+    }
+    _syncBlackoutState();
   }
 }

@@ -17,7 +17,7 @@ class AppConfig {
     return AppConfig(
       apiBaseUrl: const String.fromEnvironment(
         'POLRI_BWC_API_BASE_URL',
-        defaultValue: 'http://192.168.1.26:8787',
+        defaultValue: 'http://192.168.1.39:8787',
       ),
       apiVersion: const String.fromEnvironment(
         'POLRI_BWC_API_VERSION',
@@ -55,9 +55,11 @@ class AppConfig {
   String get reportsEndpoint => '$rootUrl/reports';
   String get recordingsEndpoint => '$rootUrl/recordings';
   String get presenceEndpoint => '$rootUrl/presence';
+  String get sosEndpoint => '$rootUrl/sos';
   String get healthEndpoint => '$rootUrl/health';
   String get pttChannelsEndpoint => '$rootUrl/ptt/channels';
   String get pttFeedEndpoint => '$rootUrl/ptt/feed';
   String get pttTransmitStartEndpoint => '$rootUrl/ptt/transmit/start';
   String get pttTransmitStopEndpoint => '$rootUrl/ptt/transmit/stop';
+  String get liveSessionsEndpoint => '$rootUrl/live/sessions';
 }

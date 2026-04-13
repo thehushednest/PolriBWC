@@ -496,6 +496,7 @@ map.setView([DEFAULT_LAT, DEFAULT_LNG], 12);
 let allPresence = [];
 let allPtt      = [];
 let allRecs     = [];
+let allLive     = [];
 let allReports  = [];
 let markers     = {};
 let activeFilter= 'all';
@@ -503,7 +504,9 @@ let activeTab   = 'ptt';
 let prevPttLen  = 0;
 let prevRecLen  = 0;
 let prevRptLen  = 0;
+let prevLiveLen = 0;
 let serverOk    = false;
+let liveViewerSessionId = '';
 
 // ── HELPERS ───────────────────────────────────────────────
 const initials = u => {
@@ -526,7 +529,7 @@ const fmtBytes = b => {
 };
 const officerColor = e => {
   if (e.isTalking)            return '#f04040';
-  if (e.status==='recording') return '#12c26a';
+  if (e.status==='recording' || e.status==='live') return '#12c26a';
   if (e.resolvedStatus==='online') return '#2d7ef6';
   return '#2a3a4a';
 };
@@ -578,7 +581,7 @@ function popupFor(e) {
 function renderMarkers() {
   const filtered = allPresence.filter(e => {
     if (activeFilter==='online')    return e.resolvedStatus==='online';
-    if (activeFilter==='rec')       return e.status==='recording';
+    if (activeFilter==='rec')       return e.status==='recording' || e.status==='live';
     if (activeFilter==='ptt')       return e.isTalking;
     return true;
   }).filter(e => e.latitude && e.longitude);
@@ -643,11 +646,11 @@ function renderOfficerList() {
   const el = document.getElementById('officer-list');
   let data = [...allPresence];
   if (activeFilter==='online')  data = data.filter(e=>e.resolvedStatus==='online');
-  if (activeFilter==='rec')     data = data.filter(e=>e.status==='recording');
+  if (activeFilter==='rec')     data = data.filter(e=>e.status==='recording' || e.status==='live');
   if (activeFilter==='ptt')     data = data.filter(e=>e.isTalking);
 
   data.sort((a,b) => {
-    const r = e => e.isTalking?0:e.status==='recording'?1:e.resolvedStatus==='online'?2:3;
+    const r = e => e.isTalking?0:(e.status==='recording' || e.status==='live')?1:e.resolvedStatus==='online'?2:3;
     return r(a)-r(b);
   });
 
@@ -661,7 +664,7 @@ function renderOfficerList() {
   }
 
   el.innerHTML = data.map(e => {
-    const isRec  = e.status==='recording';
+    const isRec  = e.status==='recording' || e.status==='live';
     const isPtt  = e.isTalking;
     const isOn   = e.resolvedStatus==='online';
     const avCol  = isPtt?'red':isRec?'green':isOn?'':'grey';
@@ -839,7 +842,7 @@ async function loadPresence() {
     allPresence = await r.json();
 
     const online = allPresence.filter(e=>e.resolvedStatus==='online');
-    const rec    = allPresence.filter(e=>e.status==='recording');
+    const rec    = allPresence.filter(e=>e.status==='recording' || e.status==='live');
 
     document.getElementById('s-online').textContent  = online.length;
     document.getElementById('s-rec').textContent     = rec.length;
@@ -901,10 +904,133 @@ function tick() {
 
 // ── REFRESH LOOP ──────────────────────────────────────────
 let tick2 = 0;
+async function loadLiveSessions() {
+  try {
+    const r = await fetch(`${API}/live/sessions`);
+    allLive = await r.json();
+    document.getElementById('s-rec').textContent = allLive.length;
+    if (liveViewerSessionId) {
+      const current = allLive.find(item => item.sessionId === liveViewerSessionId);
+      const img = document.getElementById('live-viewer-image');
+      const meta = document.getElementById('live-viewer-meta');
+      if (current && img && meta) {
+        img.src = current.frameDataUrl || '';
+        meta.textContent = `${current.officerName || current.officerId} · ${(current.channelId||'-').toUpperCase()} · ${current.locationLabel || '-'}`;
+      }
+    }
+  } catch(_) {}
+}
+
+function ensureLiveViewer() {
+  if (document.getElementById('live-viewer')) return;
+  document.body.insertAdjacentHTML('beforeend', `
+    <div id="live-viewer" style="display:none;position:fixed;inset:0;background:rgba(3,6,12,.82);z-index:9999;align-items:center;justify-content:center;padding:24px">
+      <div style="width:min(960px,96vw);background:#0d1420;border:1px solid #243550;border-radius:16px;padding:16px;box-shadow:0 18px 60px rgba(0,0,0,.45)">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
+          <div>
+            <div style="font-size:16px;font-weight:800;color:#cdd9f0">Live Cam Monitor</div>
+            <div id="live-viewer-meta" style="font-size:11px;color:#5a7599">Menunggu stream...</div>
+          </div>
+          <button onclick="closeLiveViewer()" class="map-btn" style="width:36px;height:36px">×</button>
+        </div>
+        <div style="border-radius:14px;overflow:hidden;border:1px solid #243550;background:#05080f">
+          <img id="live-viewer-image" src="" alt="live viewer" style="display:block;width:100%;height:min(72vh,720px);object-fit:contain;background:#05080f">
+        </div>
+      </div>
+    </div>`);
+}
+
+function openLiveViewer(sessionId) {
+  ensureLiveViewer();
+  liveViewerSessionId = sessionId;
+  const current = allLive.find(item => item.sessionId === sessionId);
+  const root = document.getElementById('live-viewer');
+  const img = document.getElementById('live-viewer-image');
+  const meta = document.getElementById('live-viewer-meta');
+  if (current && img && meta) {
+    img.src = current.frameDataUrl || '';
+    meta.textContent = `${current.officerName || current.officerId} · ${(current.channelId||'-').toUpperCase()} · ${current.locationLabel || '-'}`;
+  }
+  if (root) root.style.display = 'flex';
+}
+
+function closeLiveViewer() {
+  liveViewerSessionId = '';
+  const root = document.getElementById('live-viewer');
+  if (root) root.style.display = 'none';
+}
+
+async function loadRecs() {
+  try {
+    const r   = await fetch(`${API}/recordings`);
+    const recs = await r.json();
+    allRecs    = recs || [];
+    const pending  = allRecs.filter(x=>x.status==='pending'||x.status==='syncing');
+    document.getElementById('s-pending').textContent  = pending.length;
+    document.getElementById('sb-recs').textContent    = allRecs.length;
+
+    const el = document.getElementById('tab-rec');
+    if (!allRecs.length && !allLive.length) {
+      el.innerHTML = `<div class="tab-empty"><span class="tab-empty-icon">📹</span>Belum ada live stream atau rekaman dari perangkat.</div>`;
+      return;
+    }
+
+    const liveCards = allLive.map(x => {
+      const officerName = x.officerName || x.officerId || '-';
+      const preview = x.frameDataUrl
+        ? `<img src="${x.frameDataUrl}" alt="live ${officerName}" style="width:100%;height:150px;object-fit:cover;border-radius:10px;border:1px solid var(--border);margin-top:8px;background:#05080f">`
+        : `<div style="width:100%;height:150px;border-radius:10px;border:1px solid var(--border);margin-top:8px;background:#05080f;display:flex;align-items:center;justify-content:center;color:var(--muted)">Menunggu frame live...</div>`;
+      return `<div class="feed-card" style="border-color:rgba(18,194,106,.35)">
+        <div class="fc-header">
+          <div class="fc-avatar rec">LIVE</div>
+          <div class="fc-body">
+            <div class="fc-name">${officerName}</div>
+            <div class="fc-meta">${(x.channelId||'-').toUpperCase()} · ${x.locationLabel||'-'}</div>
+          </div>
+          <div class="fc-time">${fmtDate(x.startedAtIso)}</div>
+        </div>
+        ${preview}
+        <div class="fc-desc">Frame: ${x.frameCount||0} · Update: ${fmtDate(x.lastFrameAtIso)}</div>
+        <span class="fc-status synced">Live Cam Aktif</span>
+        <div style="margin-top:8px;display:flex;justify-content:flex-end">
+          <button class="flt active" style="max-width:140px" onclick="openLiveViewer('${x.sessionId}')">Pantau Live</button>
+        </div>
+      </div>`;
+    }).join('');
+
+    const recCards = allRecs.slice(0,40).map(x => {
+      const st    = x.status||'pending';
+      const stCls = st==='uploaded'?'synced':st==='syncing'?'syncing':st==='failed'?'failed':'pending';
+      const stLbl = st==='uploaded'?'Tersinkron':st==='syncing'?`Sinkron ${x.syncProgress||0}%`:st==='failed'?'Gagal':'Menunggu';
+      const prog  = st==='syncing' ? `<div class="progress-bar"><div class="progress-fill" style="width:${x.syncProgress||0}%"></div></div>` : '';
+      return `<div class="feed-card">
+        <div class="fc-header">
+          <div class="fc-avatar rec">📹</div>
+          <div class="fc-body">
+            <div class="fc-name">${x.id||'-'}</div>
+            <div class="fc-meta">${x.officerName||'-'} · ${fmtBytes(x.sizeBytes)}</div>
+          </div>
+          <div class="fc-time">${fmtDate(x.recordedAtIso)}</div>
+        </div>
+        <div class="fc-desc">${x.locationLabel||'-'}</div>
+        <span class="fc-status ${stCls}">${stLbl}</span>
+        ${prog}
+      </div>`;
+    }).join('');
+
+    el.innerHTML = liveCards + recCards;
+    if (allRecs.length > prevRecLen && prevRecLen > 0) setNotif('rec', allRecs.length - prevRecLen);
+    prevRecLen = allRecs.length;
+    if (allLive.length > prevLiveLen && prevLiveLen > 0) setNotif('rec', allLive.length - prevLiveLen);
+    prevLiveLen = allLive.length;
+  } catch(_) {}
+}
+
 async function refresh() {
-  await Promise.all([loadPresence(), checkHealth(), loadPtt()]);
+  await Promise.all([loadPresence(), checkHealth(), loadPtt(), loadLiveSessions()]);
   tick2++;
-  if (tick2 % 2 === 0) await Promise.all([loadRecs(), loadReports()]);
+  await loadRecs();
+  if (tick2 % 2 === 0) await loadReports();
   document.getElementById('sb-time').textContent =
     new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }

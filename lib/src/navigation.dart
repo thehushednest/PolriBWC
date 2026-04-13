@@ -27,7 +27,7 @@ class BottomBar extends StatelessWidget {
 
     final items = [
       (BodyWornTab.home, Icons.grid_view_rounded, 'Beranda'),
-      (BodyWornTab.record, Icons.videocam_rounded, 'Rekam'),
+      (BodyWornTab.record, Icons.videocam_rounded, 'Bodyworn'),
       (BodyWornTab.map, Icons.place_outlined, 'Peta'),
       (BodyWornTab.ptt, Icons.mic_none_rounded, 'PTT/HT'),
       (BodyWornTab.gallery, Icons.video_library_outlined, 'Rekaman'),
