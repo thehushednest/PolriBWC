@@ -66,7 +66,8 @@ class AppConfig {
     final trimmedPath = uri.path.endsWith('/')
         ? uri.path.substring(0, uri.path.length - 1)
         : uri.path;
-    final wsPath = '${trimmedPath.isEmpty ? '' : trimmedPath}/ws/ptt';
+    final wsPath =
+        '${trimmedPath.isEmpty ? '' : trimmedPath}/api/$apiVersion/ptt/ws';
     return Uri(
       scheme: scheme,
       host: uri.host,

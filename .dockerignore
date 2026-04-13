@@ -1,0 +1,7 @@
+.dart_tool
+.git
+build
+out
+android/.gradle
+ios/Pods
+legacy-android/build

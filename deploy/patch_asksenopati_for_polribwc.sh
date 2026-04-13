@@ -54,6 +54,7 @@ awk '
     print "        proxy_set_header X-Real-IP $remote_addr;"
     print "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"
     print "        proxy_set_header X-Forwarded-Proto $scheme;"
+    print "        proxy_set_header X-Forwarded-Prefix /polribwc;"
     print "        proxy_read_timeout 600s;"
     print "        proxy_send_timeout 600s;"
     print "        proxy_buffering off;"

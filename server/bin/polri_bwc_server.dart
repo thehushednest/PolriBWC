@@ -74,6 +74,7 @@ Future<void> _handleRequest(
 
   final path = request.uri.path;
   final method = request.method.toUpperCase();
+  final dashboardBasePath = _dashboardBasePath(request);
 
   try {
     if (path == '/api/v1/ptt/ws' &&
@@ -100,6 +101,7 @@ Future<void> _handleRequest(
       response.headers.contentType = ContentType.html;
       response.write(
         _buildDashboardLoginPage(
+          dashboardBasePath: dashboardBasePath,
           invalidCredentials:
               request.uri.queryParameters['error'] == 'invalid',
         ),
@@ -118,15 +120,21 @@ Future<void> _handleRequest(
           Cookie(_dashboardSessionCookieName, token)
             ..httpOnly = true
             ..sameSite = SameSite.lax
-            ..path = '/',
+            ..path = dashboardBasePath.isEmpty ? '/' : '$dashboardBasePath/',
         );
         response.statusCode = HttpStatus.found;
-        response.headers.set('Location', '/dashboard');
+        response.headers.set(
+          'Location',
+          _withDashboardBase(dashboardBasePath, '/dashboard'),
+        );
         await response.close();
         return;
       }
       response.statusCode = HttpStatus.found;
-      response.headers.set('Location', '/dashboard/login?error=invalid');
+      response.headers.set(
+        'Location',
+        _withDashboardBase(dashboardBasePath, '/dashboard/login?error=invalid'),
+      );
       await response.close();
       return;
     }
@@ -144,10 +152,13 @@ Future<void> _handleRequest(
           ..expires = DateTime.fromMillisecondsSinceEpoch(0)
           ..httpOnly = true
           ..sameSite = SameSite.lax
-          ..path = '/',
+          ..path = dashboardBasePath.isEmpty ? '/' : '$dashboardBasePath/',
       );
       response.statusCode = HttpStatus.found;
-      response.headers.set('Location', '/dashboard/login');
+      response.headers.set(
+        'Location',
+        _withDashboardBase(dashboardBasePath, '/dashboard/login'),
+      );
       await response.close();
       return;
     }
@@ -156,7 +167,10 @@ Future<void> _handleRequest(
       final token = _readCookie(request, _dashboardSessionCookieName);
       if (!dashboardAuth.isValid(token)) {
         response.statusCode = HttpStatus.found;
-        response.headers.set('Location', '/dashboard/login');
+        response.headers.set(
+          'Location',
+          _withDashboardBase(dashboardBasePath, '/dashboard/login'),
+        );
         await response.close();
         return;
       }
@@ -664,12 +678,34 @@ String _readCookie(HttpRequest request, String name) {
   return '';
 }
 
-String _buildDashboardLoginPage({bool invalidCredentials = false}) {
+String _dashboardBasePath(HttpRequest request) {
+  final forwardedPrefix =
+      request.headers.value('X-Forwarded-Prefix')?.trim() ?? '';
+  if (forwardedPrefix.isEmpty || forwardedPrefix == '/') return '';
+  final normalized = forwardedPrefix.startsWith('/')
+      ? forwardedPrefix
+      : '/$forwardedPrefix';
+  return normalized.endsWith('/')
+      ? normalized.substring(0, normalized.length - 1)
+      : normalized;
+}
+
+String _withDashboardBase(String basePath, String routePath) {
+  if (basePath.isEmpty) return routePath;
+  if (routePath == '/') return basePath;
+  return '$basePath$routePath';
+}
+
+String _buildDashboardLoginPage({
+  required String dashboardBasePath,
+  bool invalidCredentials = false,
+}) {
   final errorBanner = invalidCredentials
       ? '''
         <div class="notice">Username atau password salah.</div>
       '''
       : '';
+  final loginAction = _withDashboardBase(dashboardBasePath, '/dashboard/login');
   return '''
 <!DOCTYPE html>
 <html lang="id">
@@ -677,131 +713,283 @@ String _buildDashboardLoginPage({bool invalidCredentials = false}) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Login Dashboard Polri BWC</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     :root{
-      --ink:#17365d;
-      --muted:#6f86a6;
-      --line:#d9e7f5;
-      --panel:#ffffff;
-      --bg1:#f4f8fc;
-      --bg2:#e3edf8;
-      --accent:#2d7ef6;
-      --danger:#c53b3b;
+      --bg:#f7fbff;
+      --bg2:#eef6ff;
+      --surface:#ffffff;
+      --surface-2:#f3f8ff;
+      --border:#d7e5f3;
+      --text:#17365d;
+      --muted:#7c94b0;
+      --accent:#72b8ff;
+      --sidebar-top:#435456;
+      --sidebar-bottom:#3d4d4f;
+      --success:#12c26a;
+      --danger:#f04040;
     }
     *{box-sizing:border-box}
     body{
       margin:0;
       min-height:100vh;
-      font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-      color:var(--ink);
+      font-family:'Geist','Segoe UI',system-ui,-apple-system,sans-serif;
+      color:var(--text);
       background:
-        radial-gradient(circle at top right, rgba(45,126,246,.15), transparent 28%),
-        linear-gradient(180deg,var(--bg1),var(--bg2));
+        linear-gradient(130deg, rgba(78, 172, 108, .16) 0 26%, transparent 26% 100%),
+        repeating-linear-gradient(90deg, rgba(78,172,108,.12) 0 1px, transparent 1px 28px),
+        linear-gradient(180deg, #fdfefe 0%, #f5faff 58%, #edf5ff 100%);
       display:grid;
       place-items:center;
-      padding:24px;
+      padding:32px 20px;
     }
-    .card{
-      width:min(440px,100%);
-      background:rgba(255,255,255,.92);
-      border:1px solid var(--line);
-      border-radius:28px;
-      padding:30px;
-      box-shadow:0 30px 80px rgba(23,54,93,.14);
-      backdrop-filter:blur(10px);
+    .frame{
+      width:min(1120px,100%);
+      min-height:min(720px,calc(100vh - 40px));
+      display:grid;
+      grid-template-columns:minmax(320px, 420px) 1fr;
+      background:rgba(255,255,255,.94);
+      border:1px solid #dbe7f3;
+      border-radius:30px;
+      box-shadow:0 32px 80px rgba(150,175,208,.18);
+      overflow:hidden;
+    }
+    .panel{
+      background:linear-gradient(180deg,var(--sidebar-top) 0%,var(--sidebar-bottom) 100%);
+      color:#ffffff;
+      padding:34px 28px;
+      display:flex;
+      flex-direction:column;
+    }
+    .brand{
+      display:flex;
+      align-items:center;
+      gap:12px;
+      margin-bottom:26px;
+    }
+    .brand-icon{
+      width:50px;
+      height:50px;
+      border-radius:16px;
+      background:linear-gradient(180deg,#ffffff,#f3f8ff);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      border:1px solid #d5e3f2;
+      box-shadow:0 18px 34px rgba(0,0,0,.08);
+      color:#17365d;
+      font-size:12px;
+      font-weight:800;
+      letter-spacing:.08em;
+    }
+    .brand-name{
+      font-size:24px;
+      font-weight:500;
+      letter-spacing:.15px;
+    }
+    .brand-sub{
+      font-size:11px;
+      color:#dbe7ea;
+      font-weight:700;
+      letter-spacing:.8px;
+      text-transform:uppercase;
+      margin-top:4px;
     }
     .eyebrow{
       display:inline-flex;
       align-items:center;
       gap:8px;
-      font-size:12px;
+      width:max-content;
+      font-size:10px;
       font-weight:700;
       letter-spacing:.08em;
       text-transform:uppercase;
-      color:var(--accent);
-      background:rgba(45,126,246,.08);
+      color:#edf4f6;
+      background:rgba(255,255,255,.10);
+      border:1px solid rgba(255,255,255,.16);
       border-radius:999px;
       padding:8px 12px;
     }
     h1{
-      margin:18px 0 10px;
-      font-size:30px;
+      margin:22px 0 10px;
+      font-size:32px;
       line-height:1.1;
     }
-    p{
+    .lead{
       margin:0 0 24px;
-      color:var(--muted);
+      color:#d7e3e6;
       line-height:1.6;
+      max-width:30ch;
+    }
+    .meta{
+      display:grid;
+      gap:12px;
+      margin-top:auto;
+    }
+    .meta-card{
+      background:rgba(255,255,255,.06);
+      border:1px solid rgba(255,255,255,.10);
+      border-radius:18px;
+      padding:16px;
+    }
+    .meta-kicker{
+      font-size:10px;
+      font-weight:800;
+      letter-spacing:.08em;
+      text-transform:uppercase;
+      color:#dbe7ea;
+      margin-bottom:8px;
+    }
+    .meta-text{
+      font-size:13px;
+      line-height:1.6;
+      color:#ffffff;
+    }
+    .card{
+      background:linear-gradient(180deg,#ffffff,#f4f9ff);
+      padding:34px 34px 30px;
+      display:flex;
+      flex-direction:column;
+      justify-content:center;
+    }
+    .card-shell{
+      width:min(420px,100%);
+      margin:0 auto;
+    }
+    .card-kicker{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      font-size:10px;
+      font-weight:800;
+      letter-spacing:.08em;
+      text-transform:uppercase;
+      color:#2b4d76;
+      background:#ffffff;
+      border:1px solid #cfe0f1;
+      border-radius:20px;
+      padding:10px 14px;
+      box-shadow:0 12px 24px rgba(150,175,208,.10);
+    }
+    .card-title{
+      margin:18px 0 8px;
+      font-size:30px;
+      line-height:1.08;
+      color:var(--text);
+      font-weight:600;
+    }
+    .card-copy{
+      margin:0 0 22px;
+      color:var(--muted);
+      line-height:1.65;
     }
     label{
       display:block;
       font-size:13px;
       font-weight:700;
       margin:0 0 8px;
+      color:#29496f;
     }
     .field{margin-bottom:16px}
     input{
       width:100%;
-      border:1px solid var(--line);
+      border:1px solid #cfe0f1;
       border-radius:16px;
       padding:14px 16px;
       font-size:15px;
-      color:var(--ink);
+      color:var(--text);
       background:#fbfdff;
       outline:none;
+      font-family:inherit;
     }
     input:focus{
-      border-color:var(--accent);
-      box-shadow:0 0 0 4px rgba(45,126,246,.12);
+      border-color:#b9d3ea;
+      box-shadow:0 0 0 4px rgba(114,184,255,.16);
     }
     button{
       width:100%;
-      border:none;
+      border:1px solid rgba(255,255,255,.86);
       border-radius:18px;
       padding:15px 18px;
       font-size:15px;
       font-weight:800;
-      color:#fff;
-      background:linear-gradient(180deg,#2d7ef6,#155ac8);
+      color:#0f315f;
+      background:linear-gradient(180deg, #fefefe 0%, #edf6ff 100%);
       cursor:pointer;
-      box-shadow:0 18px 30px rgba(21,90,200,.22);
+      box-shadow:0 10px 22px rgba(66,151,255,.20);
+      font-family:inherit;
     }
     .hint{
       margin-top:14px;
       font-size:12px;
       color:var(--muted);
-      text-align:center;
+      text-align:left;
     }
     .notice{
       margin:0 0 18px;
-      border:1px solid rgba(197,59,59,.18);
-      background:rgba(197,59,59,.08);
-      color:var(--danger);
+      border:1px solid rgba(240,64,64,.16);
+      background:rgba(240,64,64,.08);
+      color:#b93a3a;
       border-radius:16px;
       padding:12px 14px;
       font-size:14px;
       font-weight:700;
     }
+    @media (max-width: 860px){
+      .frame{grid-template-columns:1fr}
+      .panel{padding:24px 22px}
+      .meta{margin-top:18px}
+      .card{padding:28px 22px 24px}
+      .card-shell{width:100%}
+    }
   </style>
 </head>
 <body>
-  <div class="card">
-    <div class="eyebrow">Dashboard Access</div>
-    <h1>Login Dashboard Polri BWC</h1>
-    <p>Masuk dulu untuk membuka command center dashboard.</p>
-    $errorBanner
-    <form method="post" action="/dashboard/login">
-      <div class="field">
-        <label for="username">Username</label>
-        <input id="username" name="username" type="text" autocomplete="username" required>
+  <div class="frame">
+    <section class="panel">
+      <div class="brand">
+        <div class="brand-icon">BWC</div>
+        <div>
+          <div class="brand-name">Polri BWC</div>
+          <div class="brand-sub">Command Center</div>
+        </div>
       </div>
-      <div class="field">
-        <label for="password">Password</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <div class="eyebrow">Dashboard Access</div>
+      <h1>Masuk ke pusat komando live monitoring.</h1>
+      <p class="lead">Gunakan akun admin dashboard untuk membuka peta patroli, live cam, status perangkat, dan feed operasional petugas.</p>
+      <div class="meta">
+        <div class="meta-card">
+          <div class="meta-kicker">Operasional</div>
+          <div class="meta-text">Akses ini melindungi dashboard command center dari kunjungan publik langsung di jalur deployment sementara.</div>
+        </div>
+        <div class="meta-card">
+          <div class="meta-kicker">Mode Aktif</div>
+          <div class="meta-text">Monitoring perangkat, live cam, SOS, rekaman, dan status kanal PTT.</div>
+        </div>
       </div>
-      <button type="submit">Masuk ke Dashboard</button>
-    </form>
-    <div class="hint">Credentials sementara: <strong>admin</strong> / <strong>admin</strong></div>
+    </section>
+    <section class="card">
+      <div class="card-shell">
+        <div class="card-kicker">Secure Sign-In</div>
+        <div class="card-title">Login Dashboard</div>
+        <p class="card-copy">Masukkan kredensial administrator untuk melanjutkan ke dashboard Polri BWC.</p>
+        $errorBanner
+        <form method="post" action="$loginAction">
+          <div class="field">
+            <label for="username">Username</label>
+            <input id="username" name="username" type="text" autocomplete="username" required>
+          </div>
+          <div class="field">
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required>
+          </div>
+          <button type="submit">Masuk ke Dashboard</button>
+        </form>
+        <div class="hint">Credentials sementara: <strong>admin</strong> / <strong>admin</strong></div>
+      </div>
+    </section>
   </div>
 </body>
 </html>
