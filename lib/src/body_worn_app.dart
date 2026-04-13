@@ -104,6 +104,8 @@ class BodyWornHomePage extends StatefulWidget {
 
 class _BodyWornHomePageState extends State<BodyWornHomePage>
     with WidgetsBindingObserver {
+  static const Duration _liveFrameInterval = Duration(seconds: 3);
+  static const int _liveFrameWarmupMs = 1200;
   final RecordingStorage _storage = RecordingStorage();
   final DateFormat _fullDateFormat = DateFormat('dd MMM yyyy HH:mm');
   final DateFormat _compactTimeFormat = DateFormat('HH:mm');
@@ -735,7 +737,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
 
       final controller = CameraController(
         _rearCamera!,
-        ResolutionPreset.high,
+        ResolutionPreset.medium,
         enableAudio: true,
         imageFormatGroup: ImageFormatGroup.jpeg,
       );
@@ -1026,7 +1028,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       _recordingStartedAt = DateTime.now();
       _activeLiveSessionId = liveSession.sessionId;
       _liveFrameCount = 0;
-      _liveFrameStatus = 'Menghubungkan Live Cam...';
+      _liveFrameStatus = 'Menghubungkan Live Cam mode hemat...';
     });
     _syncBlackoutState();
     await _sendPresenceHeartbeat();
@@ -1036,11 +1038,11 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     });
     _liveFrameTimer?.cancel();
     Future<void>.delayed(
-      const Duration(milliseconds: 900),
+      const Duration(milliseconds: _liveFrameWarmupMs),
       () => _pushLiveFrame(),
     );
     _liveFrameTimer = Timer.periodic(
-      const Duration(milliseconds: 2000),
+      _liveFrameInterval,
       (_) => unawaited(_pushLiveFrame()),
     );
     _showMessage('Live Cam aktif. Stream dikirim ke dashboard server.');
@@ -1104,8 +1106,8 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       if (mounted) {
         setState(() {
           _liveFrameStatus = _liveFrameCount == 0
-              ? 'Mengambil frame pertama...'
-              : 'Mengirim frame ${_liveFrameCount + 1}...';
+              ? 'Mengambil frame pertama mode hemat...'
+              : 'Mengirim frame ${_liveFrameCount + 1} mode hemat...';
         });
       }
       final captured = await controller.takePicture();
@@ -1132,7 +1134,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         setState(() {
           _liveFrameCount += 1;
           _liveFrameStatus =
-              'Frame $_liveFrameCount terkirim · ${_compactTimeFormat.format(DateTime.now())}';
+              'Frame $_liveFrameCount terkirim · ${_liveFrameInterval.inSeconds}dt/frame · ${_compactTimeFormat.format(DateTime.now())}';
         });
       }
       if (_liveFrameCount <= 1) {
