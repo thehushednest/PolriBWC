@@ -332,6 +332,14 @@ html,body{height:100%;overflow:hidden;
 .sb-dot.orange{background:var(--orange)}
 .sb-dot.red{background:var(--red)}
 .sb-right{margin-left:auto;display:flex;align-items:center;gap:16px}
+.sb-action{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:92px;height:32px;padding:0 14px;border-radius:999px;
+  border:1px solid rgba(23,54,93,.16);background:#17365d;color:#fff;
+  font-size:11px;font-weight:800;letter-spacing:.03em;text-decoration:none;
+  box-shadow:0 10px 20px rgba(23,54,93,.16);transition:transform .18s ease, box-shadow .18s ease, background .18s ease
+}
+.sb-action:hover{transform:translateY(-1px);box-shadow:0 14px 24px rgba(23,54,93,.22);background:#1f4779}
 
 /* â”€â”€ LEAFLET OVERRIDE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .leaflet-container{background:#edf4fb!important}
@@ -531,6 +539,7 @@ html,body{height:100%;overflow:hidden;
   <div class="sb-right">
     <div class="sb-item">Auto-refresh <span>8 detik</span></div>
     <div class="sb-item">Diperbarui: <span id="sb-time">-</span></div>
+    <a class="sb-action" id="logout-link" href="/dashboard/logout">Logout</a>
   </div>
 </div>
 
@@ -543,6 +552,7 @@ const API_BASE = (() => {
   if (path.startsWith('/polribwc/')) return window.location.origin + '/polribwc';
   return window.location.origin;
 })();
+const DASHBOARD_LOGOUT_URL = API_BASE + '/dashboard/logout';
 const API = API_BASE + '/api/v1';
 const LIVE_WS = API_BASE.replace(/^http/, 'ws') + '/api/v1/live/ws';
 const REFRESH = 8000;
@@ -574,6 +584,9 @@ let serverOk    = false;
 let liveViewerSessionId = '';
 let liveSocket = null;
 let liveRenderQueued = false;
+
+const logoutLink = document.getElementById('logout-link');
+if (logoutLink) logoutLink.href = DASHBOARD_LOGOUT_URL;
 
 // â”€â”€ HELPERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const initials = u => {
@@ -949,7 +962,7 @@ function ensureLiveViewer() {
             <div style="font-size:16px;font-weight:600;color:#17365d">Live Cam Monitor</div>
             <div id="live-viewer-meta" style="font-size:11px;color:#6f86a6">Menunggu stream...</div>
           </div>
-          <button onclick="closeLiveViewer()" class="map-btn" style="width:36px;height:36px;background:#ffffff">×</button>
+          <button onclick="closeLiveViewer()" class="map-btn" style="width:36px;height:36px;background:#17365d;border-color:#17365d;color:#ffffff;font-size:22px;font-weight:700;line-height:1;box-shadow:0 8px 18px rgba(23,54,93,.22)">×</button>
         </div>
         <div style="border-radius:20px;overflow:hidden;border:1px solid #d7e5f3;background:#eef5ff">
           <img id="live-viewer-image" src="" alt="live viewer" style="display:block;width:100%;height:min(72vh,720px);object-fit:contain;background:#eef5ff">

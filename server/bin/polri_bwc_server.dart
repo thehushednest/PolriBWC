@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 const _defaultHost = '0.0.0.0';
 const _defaultPort = 8787;
@@ -18,6 +19,7 @@ String _dataPath([String filename = '']) {
 Future<void> main(List<String> args) async {
   final options = _ServerOptions.fromArgs(args);
   final store = await LocalServerStore.load();
+  final dashboardAuth = DashboardAuthManager();
   final server = await HttpServer.bind(options.host, options.port);
   final canRelayAudio = (String channelId, String username) {
     final session = _activeSessionForChannel(store.state, channelId);
@@ -50,7 +52,13 @@ Future<void> main(List<String> args) async {
 
   await for (final request in server) {
     unawaited(
-      _handleRequest(request, store, audioWebSocketRelay, liveWebSocketRelay),
+      _handleRequest(
+        request,
+        store,
+        audioWebSocketRelay,
+        liveWebSocketRelay,
+        dashboardAuth,
+      ),
     );
   }
 }
@@ -60,6 +68,7 @@ Future<void> _handleRequest(
   LocalServerStore store,
   PttAudioWebSocketRelay audioWebSocketRelay,
   LiveMonitorWebSocketRelay liveWebSocketRelay,
+  DashboardAuthManager dashboardAuth,
 ) async {
   final response = request.response;
 
@@ -87,7 +96,70 @@ Future<void> _handleRequest(
       return;
     }
 
+    if (method == 'GET' && path == '/dashboard/login') {
+      response.headers.contentType = ContentType.html;
+      response.write(
+        _buildDashboardLoginPage(
+          invalidCredentials:
+              request.uri.queryParameters['error'] == 'invalid',
+        ),
+      );
+      await response.close();
+      return;
+    }
+
+    if (method == 'POST' && path == '/dashboard/login') {
+      final form = await _readForm(request);
+      final username = (form['username'] ?? '').trim();
+      final password = (form['password'] ?? '').trim();
+      if (username == 'admin' && password == 'admin') {
+        final token = dashboardAuth.issueToken();
+        response.cookies.add(
+          Cookie(_dashboardSessionCookieName, token)
+            ..httpOnly = true
+            ..sameSite = SameSite.lax
+            ..path = '/',
+        );
+        response.statusCode = HttpStatus.found;
+        response.headers.set('Location', '/dashboard');
+        await response.close();
+        return;
+      }
+      response.statusCode = HttpStatus.found;
+      response.headers.set('Location', '/dashboard/login?error=invalid');
+      await response.close();
+      return;
+    }
+
+    if (method == 'GET' && path == '/dashboard/logout') {
+      final existingToken = _readCookie(
+        request,
+        _dashboardSessionCookieName,
+      );
+      if (existingToken.isNotEmpty) {
+        dashboardAuth.revokeToken(existingToken);
+      }
+      response.cookies.add(
+        Cookie(_dashboardSessionCookieName, '')
+          ..expires = DateTime.fromMillisecondsSinceEpoch(0)
+          ..httpOnly = true
+          ..sameSite = SameSite.lax
+          ..path = '/',
+      );
+      response.statusCode = HttpStatus.found;
+      response.headers.set('Location', '/dashboard/login');
+      await response.close();
+      return;
+    }
+
     if (method == 'GET' && path == '/dashboard') {
+      final token = _readCookie(request, _dashboardSessionCookieName);
+      if (!dashboardAuth.isValid(token)) {
+        response.statusCode = HttpStatus.found;
+        response.headers.set('Location', '/dashboard/login');
+        await response.close();
+        return;
+      }
       final htmlFile = File(_dataPath('dashboard.html'));
       if (!await htmlFile.exists()) {
         response.statusCode = HttpStatus.notFound;
@@ -572,9 +644,205 @@ Future<Map<String, dynamic>> _readJson(HttpRequest request) async {
   return Map<String, dynamic>.from(jsonDecode(raw) as Map);
 }
 
+Future<Map<String, String>> _readForm(HttpRequest request) async {
+  final raw = await utf8.decoder.bind(request).join();
+  if (raw.trim().isEmpty) return {};
+  return Uri.splitQueryString(raw);
+}
+
 Future<void> _writeJson(HttpResponse response, Object payload) async {
   response.write(jsonEncode(payload));
   await response.close();
+}
+
+const _dashboardSessionCookieName = 'polri_bwc_dashboard_session';
+
+String _readCookie(HttpRequest request, String name) {
+  for (final cookie in request.cookies) {
+    if (cookie.name == name) return cookie.value;
+  }
+  return '';
+}
+
+String _buildDashboardLoginPage({bool invalidCredentials = false}) {
+  final errorBanner = invalidCredentials
+      ? '''
+        <div class="notice">Username atau password salah.</div>
+      '''
+      : '';
+  return '''
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login Dashboard Polri BWC</title>
+  <style>
+    :root{
+      --ink:#17365d;
+      --muted:#6f86a6;
+      --line:#d9e7f5;
+      --panel:#ffffff;
+      --bg1:#f4f8fc;
+      --bg2:#e3edf8;
+      --accent:#2d7ef6;
+      --danger:#c53b3b;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      min-height:100vh;
+      font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      color:var(--ink);
+      background:
+        radial-gradient(circle at top right, rgba(45,126,246,.15), transparent 28%),
+        linear-gradient(180deg,var(--bg1),var(--bg2));
+      display:grid;
+      place-items:center;
+      padding:24px;
+    }
+    .card{
+      width:min(440px,100%);
+      background:rgba(255,255,255,.92);
+      border:1px solid var(--line);
+      border-radius:28px;
+      padding:30px;
+      box-shadow:0 30px 80px rgba(23,54,93,.14);
+      backdrop-filter:blur(10px);
+    }
+    .eyebrow{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      font-size:12px;
+      font-weight:700;
+      letter-spacing:.08em;
+      text-transform:uppercase;
+      color:var(--accent);
+      background:rgba(45,126,246,.08);
+      border-radius:999px;
+      padding:8px 12px;
+    }
+    h1{
+      margin:18px 0 10px;
+      font-size:30px;
+      line-height:1.1;
+    }
+    p{
+      margin:0 0 24px;
+      color:var(--muted);
+      line-height:1.6;
+    }
+    label{
+      display:block;
+      font-size:13px;
+      font-weight:700;
+      margin:0 0 8px;
+    }
+    .field{margin-bottom:16px}
+    input{
+      width:100%;
+      border:1px solid var(--line);
+      border-radius:16px;
+      padding:14px 16px;
+      font-size:15px;
+      color:var(--ink);
+      background:#fbfdff;
+      outline:none;
+    }
+    input:focus{
+      border-color:var(--accent);
+      box-shadow:0 0 0 4px rgba(45,126,246,.12);
+    }
+    button{
+      width:100%;
+      border:none;
+      border-radius:18px;
+      padding:15px 18px;
+      font-size:15px;
+      font-weight:800;
+      color:#fff;
+      background:linear-gradient(180deg,#2d7ef6,#155ac8);
+      cursor:pointer;
+      box-shadow:0 18px 30px rgba(21,90,200,.22);
+    }
+    .hint{
+      margin-top:14px;
+      font-size:12px;
+      color:var(--muted);
+      text-align:center;
+    }
+    .notice{
+      margin:0 0 18px;
+      border:1px solid rgba(197,59,59,.18);
+      background:rgba(197,59,59,.08);
+      color:var(--danger);
+      border-radius:16px;
+      padding:12px 14px;
+      font-size:14px;
+      font-weight:700;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="eyebrow">Dashboard Access</div>
+    <h1>Login Dashboard Polri BWC</h1>
+    <p>Masuk dulu untuk membuka command center dashboard.</p>
+    $errorBanner
+    <form method="post" action="/dashboard/login">
+      <div class="field">
+        <label for="username">Username</label>
+        <input id="username" name="username" type="text" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+      </div>
+      <button type="submit">Masuk ke Dashboard</button>
+    </form>
+    <div class="hint">Credentials sementara: <strong>admin</strong> / <strong>admin</strong></div>
+  </div>
+</body>
+</html>
+''';
+}
+
+class DashboardAuthManager {
+  final Map<String, DateTime> _activeTokens = {};
+  final Random _random = Random.secure();
+
+  String issueToken() {
+    _pruneExpired();
+    final bytes = List<int>.generate(24, (_) => _random.nextInt(256));
+    final token = base64UrlEncode(bytes).replaceAll('=', '');
+    _activeTokens[token] = DateTime.now().toUtc().add(
+      const Duration(hours: 12),
+    );
+    return token;
+  }
+
+  bool isValid(String token) {
+    if (token.isEmpty) return false;
+    _pruneExpired();
+    final expiresAt = _activeTokens[token];
+    if (expiresAt == null) return false;
+    if (DateTime.now().toUtc().isAfter(expiresAt)) {
+      _activeTokens.remove(token);
+      return false;
+    }
+    return true;
+  }
+
+  void revokeToken(String token) {
+    if (token.isEmpty) return;
+    _activeTokens.remove(token);
+  }
+
+  void _pruneExpired() {
+    final now = DateTime.now().toUtc();
+    _activeTokens.removeWhere((_, expiresAt) => expiresAt.isBefore(now));
+  }
 }
 
 String _clockNow() {
