@@ -91,6 +91,41 @@ flutter pub get
 flutter run
 ```
 
+## Build APK Dengan Docker x86_64
+
+Workflow ini direkomendasikan kalau build APK dilakukan di host `x86_64`, atau di CI runner `amd64`, supaya tool Android native berjalan stabil tanpa workaround ARM.
+
+Bangun image builder dan hasilkan APK debug:
+
+```bash
+chmod +x ./scripts/build_apk_docker.sh
+./scripts/build_apk_docker.sh --debug
+```
+
+Hasil APK akan disalin ke:
+
+- `out/docker-apk/`
+
+Untuk build release:
+
+```bash
+./scripts/build_apk_docker.sh --release
+```
+
+Untuk mengarahkan build ke backend tertentu, export environment lalu jalankan script:
+
+```bash
+export POLRI_BWC_USE_MOCK=false
+export POLRI_BWC_API_BASE_URL=http://192.168.1.26:8787
+export POLRI_BWC_API_VERSION=v1
+./scripts/build_apk_docker.sh --debug
+```
+
+File yang dipakai workflow ini:
+
+- `docker/apk-builder.Dockerfile`
+- `scripts/build_apk_docker.sh`
+
 ## Uji Dengan HP Dan Server Laptop
 
 Alamat Wi-Fi laptop saat ini:
@@ -105,6 +140,14 @@ Jalankan server lokal di laptop:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\start_local_server.ps1 -HostAddress 0.0.0.0 -Port 8787
+```
+
+Untuk Linux:
+
+```bash
+./scripts/start_local_server_linux.sh 0.0.0.0 8787
+./scripts/status_local_server_linux.sh
+./scripts/stop_local_server_linux.sh
 ```
 
 Health check server:

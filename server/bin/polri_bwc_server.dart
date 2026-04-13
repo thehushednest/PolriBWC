@@ -19,14 +19,21 @@ Future<void> main(List<String> args) async {
   final options = _ServerOptions.fromArgs(args);
   final store = await LocalServerStore.load();
   final server = await HttpServer.bind(options.host, options.port);
+  final canRelayAudio = (String channelId, String username) {
+    final session = _activeSessionForChannel(store.state, channelId);
+    if (session == null) return false;
+    return (session['officerId'] as String? ?? '') == username;
+  };
   final audioRelay = PttAudioRelayServer(
     host: options.host,
     port: options.port + 1,
-    canRelayAudio: (channelId, username) {
-      final session = _activeSessionForChannel(store.state, channelId);
-      if (session == null) return false;
-      return (session['officerId'] as String? ?? '') == username;
-    },
+    canRelayAudio: canRelayAudio,
+  );
+  final audioWebSocketRelay = PttAudioWebSocketRelay(
+    canRelayAudio: canRelayAudio,
+  );
+  final liveWebSocketRelay = LiveMonitorWebSocketRelay(
+    initialSessions: _resolvedLiveSessions(store),
   );
   await audioRelay.start();
   Timer.periodic(const Duration(seconds: 8), (_) {
@@ -42,24 +49,44 @@ Future<void> main(List<String> args) async {
   _printPresenceSnapshot(store, reason: 'startup');
 
   await for (final request in server) {
-    unawaited(_handleRequest(request, store));
+    unawaited(
+      _handleRequest(request, store, audioWebSocketRelay, liveWebSocketRelay),
+    );
   }
 }
 
-Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
+Future<void> _handleRequest(
+  HttpRequest request,
+  LocalServerStore store,
+  PttAudioWebSocketRelay audioWebSocketRelay,
+  LiveMonitorWebSocketRelay liveWebSocketRelay,
+) async {
   final response = request.response;
-  _applyCors(response);
-
-  if (request.method == 'OPTIONS') {
-    response.statusCode = HttpStatus.noContent;
-    await response.close();
-    return;
-  }
 
   final path = request.uri.path;
   final method = request.method.toUpperCase();
 
   try {
+    if (path == '/api/v1/ptt/ws' &&
+        WebSocketTransformer.isUpgradeRequest(request)) {
+      await audioWebSocketRelay.handleUpgrade(request);
+      return;
+    }
+
+    if (path == '/api/v1/live/ws' &&
+        WebSocketTransformer.isUpgradeRequest(request)) {
+      await liveWebSocketRelay.handleUpgrade(request);
+      return;
+    }
+
+    _applyCors(response);
+
+    if (request.method == 'OPTIONS') {
+      response.statusCode = HttpStatus.noContent;
+      await response.close();
+      return;
+    }
+
     if (method == 'GET' && path == '/dashboard') {
       final htmlFile = File(_dataPath('dashboard.html'));
       if (!await htmlFile.exists()) {
@@ -79,7 +106,9 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
         'status': 'ok',
         'service': 'polri-bwc-local-server',
         'time': DateTime.now().toUtc().toIso8601String(),
-        'onlineCount': _resolvedPresenceEntries(store).where((e) => e['resolvedStatus'] == 'online').length,
+        'onlineCount': _resolvedPresenceEntries(
+          store,
+        ).where((e) => e['resolvedStatus'] == 'online').length,
         'totalDevices': store.state.presence.length,
         'liveCount': _resolvedLiveSessions(store).length,
         'recordingCount': store.state.recordings.length,
@@ -93,7 +122,9 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
       final password = (body['password'] as String? ?? '').trim();
       if (username.isEmpty || password.isEmpty) {
         response.statusCode = HttpStatus.badRequest;
-        return _writeJson(response, {'error': 'username dan password wajib diisi'});
+        return _writeJson(response, {
+          'error': 'username dan password wajib diisi',
+        });
       }
       final user = store.state.users[username];
       if (user == null || (user['password'] as String? ?? '') != password) {
@@ -172,7 +203,8 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
         'deviceId': body['deviceId'] as String? ?? '',
         'status': 'live',
         'startedAtIso': DateTime.now().toUtc().toIso8601String(),
-        'locationLabel': body['locationLabel'] as String? ?? 'Lokasi tidak tersedia',
+        'locationLabel':
+            body['locationLabel'] as String? ?? 'Lokasi tidak tersedia',
         'channelId': body['channelId'] as String? ?? '',
         'latitude': body['latitude'],
         'longitude': body['longitude'],
@@ -180,13 +212,18 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
         'frameDataUrl': '',
         'frameCount': 0,
       };
-      final updatedLive = Map<String, Map<String, dynamic>>.from(
-        store.state.liveSessions,
-      )..removeWhere((_, value) => (value['officerId'] as String? ?? '') == officerId)
-       ..[sessionId] = liveSession;
+      final updatedLive =
+          Map<String, Map<String, dynamic>>.from(store.state.liveSessions)
+            ..removeWhere(
+              (_, value) => (value['officerId'] as String? ?? '') == officerId,
+            )
+            ..[sessionId] = liveSession;
       store.state = store.state.copyWith(liveSessions: updatedLive);
       await store.save();
-      stdout.writeln('[${_clockNow()}][live-start] $officerId membuka live session $sessionId');
+      liveWebSocketRelay.broadcastSnapshot(_resolvedLiveSessions(store));
+      stdout.writeln(
+        '[${_clockNow()}][live-start] $officerId membuka live session $sessionId',
+      );
       return _writeJson(response, liveSession);
     }
 
@@ -216,6 +253,7 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
         'locationLabel': body['locationLabel'] ?? current['locationLabel'],
       };
       store.state = store.state.copyWith(liveSessions: updatedLive);
+      liveWebSocketRelay.broadcastFrame(updatedLive[sessionId]!);
       return _writeJson(response, {
         'status': 'ok',
         'sessionId': sessionId,
@@ -236,7 +274,8 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
       } else if (officerId.isNotEmpty) {
         final targetKey = updatedLive.entries
             .firstWhere(
-              (entry) => (entry.value['officerId'] as String? ?? '') == officerId,
+              (entry) =>
+                  (entry.value['officerId'] as String? ?? '') == officerId,
               orElse: () => const MapEntry('', <String, dynamic>{}),
             )
             .key;
@@ -247,12 +286,11 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
       }
       store.state = store.state.copyWith(liveSessions: updatedLive);
       await store.save();
+      liveWebSocketRelay.broadcastSnapshot(_resolvedLiveSessions(store));
       stdout.writeln(
         '[${_clockNow()}][live-stop] ${(officerId.isEmpty ? sessionId : officerId)} menghentikan live session',
       );
-      return _writeJson(response, {
-        'status': removed ? 'stopped' : 'idle',
-      });
+      return _writeJson(response, {'status': removed ? 'stopped' : 'idle'});
     }
 
     if (method == 'GET' && path == '/api/v1/chats') {
@@ -466,10 +504,7 @@ Future<void> _handleRequest(HttpRequest request, LocalServerStore store) async {
       store.state = _cleanupStalePttSessions(store.state);
       final activeSession = _activeSessionForChannel(store.state, channelId);
       if (activeSession == null) {
-        return _writeJson(response, {
-          'status': 'idle',
-          'channelId': channelId,
-        });
+        return _writeJson(response, {'status': 'idle', 'channelId': channelId});
       }
       final officerId =
           activeSession['officerId'] as String? ?? requestedOfficerId;
@@ -570,7 +605,10 @@ List<Map<String, dynamic>> _resolvedPresenceEntries(
               'signalLabel': isOnline ? 'Online' : 'Offline',
               'isTalking':
                   isOnline &&
-                  ((_activeSessionForChannel(store.state, activeChannelId)?['officerId']
+                  ((_activeSessionForChannel(
+                                store.state,
+                                activeChannelId,
+                              )?['officerId']
                               as String? ??
                           '') ==
                       username),
@@ -638,19 +676,20 @@ Map<String, dynamic>? _activeSessionForChannel(
     return sessions;
   }
   final legacy = state.activePttSession;
-  if ((legacy['channelId'] as String? ?? '') == channelId && legacy.isNotEmpty) {
+  if ((legacy['channelId'] as String? ?? '') == channelId &&
+      legacy.isNotEmpty) {
     return legacy;
   }
   return null;
 }
 
 List<Map<String, dynamic>> _resolvedLiveSessions(LocalServerStore store) {
-  final sessions = _cleanupStaleLiveSessions(store.state).liveSessions.values.toList()
-    ..sort(
-      (a, b) => (b['startedAtIso'] as String? ?? '').compareTo(
-        a['startedAtIso'] as String? ?? '',
-      ),
-    );
+  final sessions =
+      _cleanupStaleLiveSessions(store.state).liveSessions.values.toList()..sort(
+        (a, b) => (b['startedAtIso'] as String? ?? '').compareTo(
+          a['startedAtIso'] as String? ?? '',
+        ),
+      );
   return sessions;
 }
 
@@ -688,7 +727,10 @@ LocalServerState _cleanupStaleLiveSessions(LocalServerState state) {
   return state.copyWith(liveSessions: cleaned);
 }
 
-LocalServerState _releaseOfficerFloor(LocalServerState state, String officerId) {
+LocalServerState _releaseOfficerFloor(
+  LocalServerState state,
+  String officerId,
+) {
   if (officerId.isEmpty || state.activePttSessions.isEmpty) return state;
   final cleaned = <String, Map<String, dynamic>>{};
   for (final entry in state.activePttSessions.entries) {
@@ -1001,10 +1043,8 @@ class LocalServerState {
         json['activePttSession'] as Map? ?? const {},
       ),
       activePttSessions: (json['activePttSessions'] as Map? ?? const {}).map(
-        (key, value) => MapEntry(
-          key.toString(),
-          Map<String, dynamic>.from(value as Map),
-        ),
+        (key, value) =>
+            MapEntry(key.toString(), Map<String, dynamic>.from(value as Map)),
       ),
     );
   }
@@ -1138,6 +1178,121 @@ class PttAudioRelayServer {
   }
 }
 
+class PttAudioWebSocketRelay {
+  PttAudioWebSocketRelay({required this.canRelayAudio});
+
+  final bool Function(String channelId, String username) canRelayAudio;
+  final List<_PttWebSocketConnection> _clients = [];
+
+  Future<void> handleUpgrade(HttpRequest request) async {
+    final socket = await WebSocketTransformer.upgrade(request);
+    final client = _PttWebSocketConnection(
+      socket: socket,
+      onDisconnect: _removeClient,
+      onAudioPacket: _relayPacket,
+    );
+    _clients.add(client);
+    stdout.writeln(
+      '[${_clockNow()}][audio-ws-connect] client ${request.connectionInfo?.remoteAddress.address ?? 'unknown'}',
+    );
+    client.start();
+  }
+
+  void _relayPacket(
+    _PttWebSocketConnection sender,
+    Map<String, dynamic> packet,
+  ) {
+    final channelId = packet['channelId'] as String? ?? '';
+    final username = packet['username'] as String? ?? sender.username;
+    if (!canRelayAudio(channelId, username)) {
+      sender.deniedPacketCount += 1;
+      if (sender.deniedPacketCount == 1 || sender.deniedPacketCount % 50 == 0) {
+        stdout.writeln(
+          '[${_clockNow()}][audio-ws-drop] $username@$channelId bukan floor holder',
+        );
+      }
+      return;
+    }
+    sender.audioPacketCount += 1;
+    if (sender.audioPacketCount == 1 || sender.audioPacketCount % 50 == 0) {
+      stdout.writeln(
+        '[${_clockNow()}][audio-ws-in] $username@$channelId packets=${sender.audioPacketCount}',
+      );
+    }
+
+    var relayed = 0;
+    for (final client in _clients.toList()) {
+      if (identical(client, sender)) continue;
+      if (client.channelId != channelId) continue;
+      client.send(packet);
+      relayed += 1;
+    }
+    if (sender.audioPacketCount == 1 || sender.audioPacketCount % 50 == 0) {
+      stdout.writeln(
+        '[${_clockNow()}][audio-ws-out] $username@$channelId relayed=$relayed',
+      );
+    }
+  }
+
+  void _removeClient(_PttWebSocketConnection client) {
+    _clients.remove(client);
+    final safeUsername = client.username.isEmpty ? 'unknown' : client.username;
+    stdout.writeln(
+      '[${_clockNow()}][audio-ws-disconnect] $safeUsername@${client.channelId}',
+    );
+  }
+}
+
+class LiveMonitorWebSocketRelay {
+  LiveMonitorWebSocketRelay({
+    required List<Map<String, dynamic>> initialSessions,
+  }) : _latestSessions = List<Map<String, dynamic>>.from(initialSessions);
+
+  final List<WebSocket> _clients = [];
+  List<Map<String, dynamic>> _latestSessions;
+
+  Future<void> handleUpgrade(HttpRequest request) async {
+    final socket = await WebSocketTransformer.upgrade(request);
+    _clients.add(socket);
+    socket.add(jsonEncode({'type': 'snapshot', 'sessions': _latestSessions}));
+    socket.listen(
+      (_) {},
+      onDone: () => _clients.remove(socket),
+      onError: (_) => _clients.remove(socket),
+      cancelOnError: true,
+    );
+  }
+
+  void broadcastSnapshot(List<Map<String, dynamic>> sessions) {
+    _latestSessions = List<Map<String, dynamic>>.from(sessions);
+    _broadcast({'type': 'snapshot', 'sessions': _latestSessions});
+  }
+
+  void broadcastFrame(Map<String, dynamic> session) {
+    final sessionId = session['sessionId'] as String? ?? '';
+    final index = _latestSessions.indexWhere(
+      (item) => (item['sessionId'] as String? ?? '') == sessionId,
+    );
+    if (index >= 0) {
+      _latestSessions[index] = session;
+    } else {
+      _latestSessions = [session, ..._latestSessions];
+    }
+    _broadcast({'type': 'frame', 'session': session});
+  }
+
+  void _broadcast(Map<String, dynamic> payload) {
+    final raw = jsonEncode(payload);
+    for (final client in _clients.toList()) {
+      try {
+        client.add(raw);
+      } catch (_) {
+        _clients.remove(client);
+      }
+    }
+  }
+}
+
 class _PttClientConnection {
   _PttClientConnection({
     required this.socket,
@@ -1198,6 +1353,66 @@ class _PttClientConnection {
   void send(Map<String, dynamic> payload) {
     try {
       socket.write('${jsonEncode(payload)}\n');
+    } catch (_) {}
+  }
+}
+
+class _PttWebSocketConnection {
+  _PttWebSocketConnection({
+    required this.socket,
+    required this.onDisconnect,
+    required this.onAudioPacket,
+  });
+
+  final WebSocket socket;
+  final void Function(_PttWebSocketConnection client) onDisconnect;
+  final void Function(
+    _PttWebSocketConnection sender,
+    Map<String, dynamic> packet,
+  )
+  onAudioPacket;
+
+  String username = '';
+  String channelId = 'ch3';
+  int audioPacketCount = 0;
+  int deniedPacketCount = 0;
+
+  void start() {
+    socket.listen(
+      (raw) {
+        if (raw is! String) return;
+        final message = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+        final type = message['type'] as String? ?? '';
+        switch (type) {
+          case 'hello':
+          case 'join':
+            username = message['username'] as String? ?? username;
+            channelId = message['channelId'] as String? ?? channelId;
+            final safeUsername = username.isEmpty ? 'unknown' : username;
+            stdout.writeln(
+              '[${_clockNow()}][audio-ws-$type] $safeUsername@$channelId',
+            );
+            break;
+          case 'audio':
+            onAudioPacket(this, {
+              ...message,
+              'username': message['username'] ?? username,
+              'channelId': message['channelId'] ?? channelId,
+            });
+            break;
+          default:
+            break;
+        }
+      },
+      onDone: () => onDisconnect(this),
+      onError: (_) => onDisconnect(this),
+      cancelOnError: true,
+    );
+  }
+
+  void send(Map<String, dynamic> payload) {
+    try {
+      socket.add(jsonEncode(payload));
     } catch (_) {}
   }
 }
