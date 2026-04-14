@@ -246,6 +246,33 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         } else if (state == 'up' && _isTalking) {
           await _stopNativePtt();
         }
+        return;
+      case 'pttAudioState':
+        final arguments = Map<String, dynamic>.from(
+          (call.arguments as Map?)?.cast<String, dynamic>() ?? const {},
+        );
+        final state = arguments['state'] as String? ?? '';
+        if (!mounted) return;
+        setState(() {
+          _isPttConnected = state == 'connected' || state == 'recording';
+        });
+        return;
+      case 'pttAudioError':
+        final arguments = Map<String, dynamic>.from(
+          (call.arguments as Map?)?.cast<String, dynamic>() ?? const {},
+        );
+        final message = arguments['message'] as String? ?? '';
+        if (!mounted) return;
+        setState(() {
+          _isPttConnected = false;
+          _isTalking = false;
+          _pttTalkingChannelId = null;
+          _pttStartedAt = null;
+        });
+        if (message.isNotEmpty) {
+          _showMessage(message);
+        }
+        return;
     }
   }
 
@@ -298,7 +325,17 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     }
 
     try {
-      await _kDeviceChannel.invokeMethod('startNativePtt');
+      final started =
+          await _kDeviceChannel.invokeMethod<bool>('startNativePtt') ?? false;
+      if (!started) {
+        await _backend.stopPttTransmit(
+          channelId: talkChannelId,
+          officerId: session.nrp,
+          durationSeconds: 0,
+        );
+        await _refreshPttData();
+        return;
+      }
       if (mounted) {
         setState(() {
           _isTalking = true;

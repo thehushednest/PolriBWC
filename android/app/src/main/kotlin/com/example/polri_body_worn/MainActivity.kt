@@ -16,7 +16,11 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity(), SensorEventListener {
     private lateinit var deviceChannel: MethodChannel
-    private val pttAudioBridge by lazy { PttAudioBridge(this) }
+    private val pttAudioBridge by lazy {
+        PttAudioBridge(this) { event, payload ->
+            emitDeviceEvent(event, payload)
+        }
+    }
     private var sensorManager: SensorManager? = null
     private var proximitySensor: Sensor? = null
     private var lastProximityNear: Boolean? = null
@@ -33,11 +37,13 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     }
 
     private fun emitProximityState(near: Boolean) {
-        if (::deviceChannel.isInitialized) {
-            deviceChannel.invokeMethod(
-                "proximityChanged",
-                mapOf("near" to near),
-            )
+        emitDeviceEvent("proximityChanged", mapOf("near" to near))
+    }
+
+    private fun emitDeviceEvent(method: String, payload: Map<String, Any?>) {
+        if (!::deviceChannel.isInitialized) return
+        runOnUiThread {
+            deviceChannel.invokeMethod(method, payload)
         }
     }
 
@@ -91,8 +97,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                 }
 
                 "startNativePtt" -> {
-                    pttAudioBridge.startTalking()
-                    result.success(true)
+                    result.success(pttAudioBridge.startTalking())
                 }
 
                 "stopNativePtt" -> {

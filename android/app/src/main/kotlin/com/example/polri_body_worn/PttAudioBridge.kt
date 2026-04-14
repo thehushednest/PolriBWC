@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class PttAudioBridge(
     private val context: Context,
+    private val emitEvent: (String, Map<String, Any?>) -> Unit = { _, _ -> },
 ) {
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private val httpClient = OkHttpClient.Builder()
@@ -76,6 +77,7 @@ class PttAudioBridge(
         this.channelId = channelId
         this.deviceId = deviceId
         isManualDisconnect = false
+        emitState("connecting", detail = "Menghubungkan audio PTT…")
         configureAudioRouting()
         connectInternal()
     }
@@ -98,8 +100,12 @@ class PttAudioBridge(
         }
     }
 
-    fun startTalking() {
-        if (isCapturing.get()) return
+    fun startTalking(): Boolean {
+        if (isCapturing.get()) return true
+        if (socketUrl.isBlank()) {
+            emitError("Audio PTT belum dikonfigurasi.")
+            return false
+        }
         isCapturing.set(true)
         configureAudioRouting()
         connectInternal()
@@ -107,19 +113,47 @@ class PttAudioBridge(
         val minBuffer = AudioRecord.getMinBufferSize(sampleRate, channelInConfig, audioEncoding)
         if (minBuffer <= 0) {
             isCapturing.set(false)
-            return
+            emitError("Gagal menentukan buffer mikrofon PTT.")
+            return false
         }
 
-        val record = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-            sampleRate,
-            channelInConfig,
-            audioEncoding,
-            maxOf(minBuffer * 2, frameBytes * 4),
-        )
+        val record = try {
+            AudioRecord(
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                sampleRate,
+                channelInConfig,
+                audioEncoding,
+                maxOf(minBuffer * 2, frameBytes * 4),
+            )
+        } catch (_: Exception) {
+            isCapturing.set(false)
+            emitError("AudioRecord gagal dibuat. Periksa izin mikrofon.")
+            return false
+        }
+        if (record.state != AudioRecord.STATE_INITIALIZED) {
+            isCapturing.set(false)
+            try {
+                record.release()
+            } catch (_: Exception) {
+            }
+            emitError("Mikrofon PTT belum siap dipakai.")
+            return false
+        }
         audioRecord = record
         enableAudioEffects(record.audioSessionId)
-        record.startRecording()
+        try {
+            record.startRecording()
+        } catch (_: Exception) {
+            isCapturing.set(false)
+            try {
+                record.release()
+            } catch (_: Exception) {
+            }
+            audioRecord = null
+            emitError("Gagal memulai rekam mikrofon PTT.")
+            return false
+        }
+        emitState("recording", detail = "Mikrofon PTT aktif.")
 
         recorderThread = Thread {
             val readBuffer = ByteArray(frameBytes)
@@ -153,6 +187,7 @@ class PttAudioBridge(
             name = "polri-bwc-ptt-record"
             start()
         }
+        return true
     }
 
     fun stopTalking() {
@@ -167,6 +202,10 @@ class PttAudioBridge(
         }
         audioRecord = null
         recorderThread = null
+        emitState(
+            if (isSocketOpen) "connected" else "disconnected",
+            detail = if (isSocketOpen) "Mikrofon PTT berhenti." else "Audio PTT terputus.",
+        )
     }
 
     fun disconnect() {
@@ -176,11 +215,13 @@ class PttAudioBridge(
         closeSocketOnly()
         releasePlayback()
         resetAudioRouting()
+        emitState("disconnected", detail = "Audio PTT dimatikan.")
     }
 
     private fun connectInternal() {
         if (socketUrl.isBlank() || isConnecting.get() || isSocketOpen) return
         isConnecting.set(true)
+        emitState("connecting", detail = "Menghubungkan socket audio PTT…")
         ioExecutor.execute {
             try {
                 closeSocketOnly()
@@ -193,6 +234,7 @@ class PttAudioBridge(
                         stopReconnect()
                         configureAudioRouting()
                         ensureAudioTrack()
+                        emitState("connected", detail = "Socket audio PTT terhubung.")
                         sendJson(
                             mapOf(
                                 "type" to "hello",
@@ -211,6 +253,7 @@ class PttAudioBridge(
                         isSocketOpen = false
                         isConnecting.set(false)
                         closeSocketOnly()
+                        emitState("disconnected", detail = "Socket audio PTT gagal.")
                         if (!isManualDisconnect) {
                             scheduleReconnect()
                         }
@@ -218,7 +261,9 @@ class PttAudioBridge(
 
                     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                         isSocketOpen = false
+                        isConnecting.set(false)
                         closeSocketOnly()
+                        emitState("disconnected", detail = "Socket audio PTT ditutup.")
                         if (!isManualDisconnect) {
                             scheduleReconnect()
                         }
@@ -228,6 +273,7 @@ class PttAudioBridge(
                 isSocketOpen = false
                 isConnecting.set(false)
                 closeSocketOnly()
+                emitState("disconnected", detail = "Socket audio PTT gagal dibuat.")
                 if (!isManualDisconnect) {
                     scheduleReconnect()
                 }
@@ -397,5 +443,30 @@ class PttAudioBridge(
         }
         webSocket = null
         isSocketOpen = false
+    }
+
+    private fun emitState(state: String, detail: String = "") {
+        emitEvent(
+            "pttAudioState",
+            mapOf(
+                "state" to state,
+                "detail" to detail,
+                "channelId" to channelId,
+                "username" to username,
+                "isCapturing" to isCapturing.get(),
+                "isSocketOpen" to isSocketOpen,
+            ),
+        )
+    }
+
+    private fun emitError(message: String) {
+        emitEvent(
+            "pttAudioError",
+            mapOf(
+                "message" to message,
+                "channelId" to channelId,
+                "username" to username,
+            ),
+        )
     }
 }
