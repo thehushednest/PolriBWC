@@ -32,6 +32,7 @@ abstract class BackendGateway {
     required String officerName,
     required String deviceId,
     required String channelId,
+    required String tagLabel,
     required String preferredTransport,
     required String fallbackTransport,
     required String signalingUrl,

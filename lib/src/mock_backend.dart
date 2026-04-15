@@ -111,6 +111,7 @@ class MockBackendService implements BackendGateway {
     required String officerName,
     required String deviceId,
     required String channelId,
+    required String tagLabel,
     required String preferredTransport,
     required String fallbackTransport,
     required String signalingUrl,
@@ -125,6 +126,7 @@ class MockBackendService implements BackendGateway {
     status: 'live',
     startedAtIso: DateTime.now().toIso8601String(),
     locationLabel: locationLabel ?? 'Lokasi tidak tersedia',
+    tagLabel: tagLabel,
     channelId: channelId,
     latitude: latitude,
     longitude: longitude,
@@ -291,5 +293,4 @@ class MockBackendService implements BackendGateway {
     'Noted, akan ditindaklanjuti.',
   ];
 }
-
 

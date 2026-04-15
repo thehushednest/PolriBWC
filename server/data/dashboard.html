@@ -301,6 +301,51 @@ html,body{height:100%;overflow:hidden;
 .fc-meta{font-size:10px;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fc-time{font-size:10px;color:var(--dim);flex-shrink:0;font-variant-numeric:tabular-nums}
 .fc-desc{font-size:11px;color:#6f86a6;margin-top:8px;line-height:1.6}
+.fc-detail-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:8px;
+  margin-top:10px}
+.fc-detail{
+  padding:9px 10px;
+  border-radius:12px;
+  background:linear-gradient(180deg,#f8fbff,#eef5ff);
+  border:1px solid #d9e6f4}
+.fc-detail-label{
+  font-size:9px;
+  font-weight:800;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  color:#89a0bb}
+.fc-detail-value{
+  margin-top:4px;
+  font-size:11px;
+  font-weight:700;
+  color:#23476f;
+  line-height:1.45;
+  word-break:break-word}
+.fc-chip-row{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.fc-chip{
+  display:inline-flex;align-items:center;
+  padding:5px 10px;border-radius:999px;
+  font-size:10px;font-weight:800;letter-spacing:.02em;
+  border:1px solid transparent}
+.fc-chip.live{background:rgba(18,194,106,.12);color:#16824c;border-color:rgba(18,194,106,.2)}
+.fc-chip.tag{background:rgba(14,165,233,.10);color:#156d92;border-color:rgba(14,165,233,.18)}
+.fc-chip.channel{background:rgba(114,184,255,.14);color:#3b78bb;border-color:rgba(114,184,255,.2)}
+.fc-chip.user{background:rgba(240,64,64,.10);color:#b53737;border-color:rgba(240,64,64,.16)}
+.fc-viewer-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:10px;
+  margin-top:14px}
+.fc-viewer-card{
+  padding:10px 12px;
+  border-radius:14px;
+  background:linear-gradient(180deg,#fbfdff,#f1f7ff);
+  border:1px solid #d7e5f3}
+.fc-viewer-card .fc-detail-label{font-size:9px}
+.fc-viewer-card .fc-detail-value{font-size:11px}
 .fc-status{
   display:inline-block;margin-top:8px;font-size:10px;font-weight:800;
   padding:4px 10px;border-radius:999px}
@@ -607,6 +652,17 @@ const fmtBytes = b => {
   if (!b) return '-';
   return b > 1024*1024 ? (b/1024/1024).toFixed(1)+' MB' : (b/1024).toFixed(0)+' KB';
 };
+const fmtCoords = (lat, lng) => {
+  if (typeof lat !== 'number' || typeof lng !== 'number') return 'Koordinat belum tersedia';
+  return `Lat ${lat.toFixed(5)}, Lng ${lng.toFixed(5)}`;
+};
+const liveTagLabel = session => session.tagLabel || 'Tag belum dikirim dari perangkat';
+const liveStatusLabel = session => {
+  const frames = session.frameCount || 0;
+  return frames > 0 ? `Live aktif · ${frames} frame terkirim` : 'Live aktif · menunggu frame';
+};
+const renderDetail = (label, value) => `<div class="fc-detail"><div class="fc-detail-label">${label}</div><div class="fc-detail-value">${value || '-'}</div></div>`;
+const renderViewerDetail = (label, value) => `<div class="fc-viewer-card"><div class="fc-detail-label">${label}</div><div class="fc-detail-value">${value || '-'}</div></div>`;
 const officerColor = e => {
   if (e.isTalking)            return '#f04040';
   if (e.status==='recording' || e.status==='live') return '#12c26a';
@@ -964,11 +1020,33 @@ function ensureLiveViewer() {
           </div>
           <button onclick="closeLiveViewer()" class="map-btn" style="width:36px;height:36px;background:#17365d;border-color:#17365d;color:#ffffff;font-size:22px;font-weight:700;line-height:1;box-shadow:0 8px 18px rgba(23,54,93,.22)">×</button>
         </div>
+        <div id="live-viewer-chips" class="fc-chip-row" style="margin-top:0;margin-bottom:12px"></div>
         <div style="border-radius:20px;overflow:hidden;border:1px solid #d7e5f3;background:#eef5ff">
           <img id="live-viewer-image" src="" alt="live viewer" style="display:block;width:100%;height:min(72vh,720px);object-fit:contain;background:#eef5ff">
         </div>
+        <div id="live-viewer-details" class="fc-viewer-grid"></div>
       </div>
     </div>`);
+}
+
+function renderLiveViewerDetails(current) {
+  const chips = document.getElementById('live-viewer-chips');
+  const details = document.getElementById('live-viewer-details');
+  if (!chips || !details) return;
+  const officerName = current.officerName || current.officerId || '-';
+  chips.innerHTML = `
+    <span class="fc-chip live">Pantauan Tinjau Live</span>
+    <span class="fc-chip user">${officerName}</span>
+    <span class="fc-chip channel">${(current.channelId || '-').toUpperCase()}</span>
+    <span class="fc-chip tag">${liveTagLabel(current)}</span>`;
+  details.innerHTML = [
+    renderViewerDetail('Nama Petugas / User', officerName),
+    renderViewerDetail('Lokasi', current.locationLabel || 'Lokasi tidak tersedia'),
+    renderViewerDetail('Koordinat', fmtCoords(current.latitude, current.longitude)),
+    renderViewerDetail('Status Stream', liveStatusLabel(current)),
+    renderViewerDetail('Mulai Live', fmtDate(current.startedAtIso)),
+    renderViewerDetail('Update Terakhir', fmtDate(current.lastFrameAtIso || current.startedAtIso)),
+  ].join('');
 }
 
 function openLiveViewer(sessionId) {
@@ -981,6 +1059,7 @@ function openLiveViewer(sessionId) {
   if (current && img && meta) {
     img.src = current.frameDataUrl || '';
     meta.textContent = `${current.officerName || current.officerId} · ${(current.channelId||'-').toUpperCase()} · ${current.locationLabel || '-'}`;
+    renderLiveViewerDetails(current);
   }
   if (root) root.style.display = 'flex';
 }
@@ -1016,6 +1095,7 @@ function renderLiveCards() {
 
   const liveCards = allLive.map(x => {
     const officerName = x.officerName || x.officerId || '-';
+    const tagLabel = liveTagLabel(x);
     const preview = x.frameDataUrl
       ? `<img src="${x.frameDataUrl}" alt="live ${officerName}" style="width:100%;height:120px;object-fit:cover;border-radius:10px;border:1px solid var(--border);margin-top:8px;background:#05080f">`
       : `<div style="width:100%;height:120px;border-radius:10px;border:1px solid var(--border);margin-top:8px;background:#05080f;display:flex;align-items:center;justify-content:center;color:var(--muted)">Menunggu frame live...</div>`;
@@ -1024,13 +1104,24 @@ function renderLiveCards() {
         <div class="fc-avatar rec">LIVE</div>
         <div class="fc-body">
           <div class="fc-name">${officerName}</div>
-          <div class="fc-meta">${(x.channelId||'-').toUpperCase()} · ${x.locationLabel||'-'}</div>
+          <div class="fc-meta">Petugas/User · ${officerName}</div>
         </div>
-        <div class="fc-time">${fmtDate(x.startedAtIso)}</div>
+        <div class="fc-time">${x.frameCount||0} frame</div>
+      </div>
+      <div class="fc-chip-row">
+        <span class="fc-chip live">Pantauan Tinjau Live</span>
+        <span class="fc-chip user">${officerName}</span>
+        <span class="fc-chip channel">${(x.channelId||'-').toUpperCase()}</span>
+        <span class="fc-chip tag">${tagLabel}</span>
       </div>
       ${preview}
-      <div class="fc-desc">Frame: ${x.frameCount||0} · Update: ${fmtDate(x.lastFrameAtIso)}</div>
-      <span class="fc-status synced">Live Cam Aktif · realtime push</span>
+      <div class="fc-detail-grid">
+        ${renderDetail('Lokasi', x.locationLabel || 'Lokasi tidak tersedia')}
+        ${renderDetail('Koordinat', fmtCoords(x.latitude, x.longitude))}
+        ${renderDetail('Status Live', liveStatusLabel(x))}
+        ${renderDetail('Update Frame', fmtDate(x.lastFrameAtIso || x.startedAtIso))}
+      </div>
+      <span class="fc-status synced">Live Cam aktif · realtime push</span>
       <div style="margin-top:8px;display:flex;justify-content:flex-end">
         <button class="flt active" style="max-width:140px" onclick="openLiveViewer('${x.sessionId}')">Pantau Live</button>
       </div>
@@ -1072,11 +1163,21 @@ function renderRecordingsCards() {
         <div class="fc-avatar rec">REC</div>
         <div class="fc-body">
           <div class="fc-name">${x.id||'-'}</div>
-          <div class="fc-meta">${x.officerName||'-'} · ${fmtBytes(x.sizeBytes)}</div>
+          <div class="fc-meta">Petugas/User · ${x.officerName||'-'}</div>
         </div>
         <div class="fc-time">${fmtDate(x.recordedAtIso)}</div>
       </div>
-      <div class="fc-desc">${x.locationLabel||'-'}</div>
+      <div class="fc-chip-row">
+        <span class="fc-chip tag">${x.tagLabel || 'Lainnya'}</span>
+        <span class="fc-chip user">${x.officerName || '-'}</span>
+        <span class="fc-chip channel">${(x.source || 'rekaman').toUpperCase()}</span>
+      </div>
+      <div class="fc-detail-grid">
+        ${renderDetail('Lokasi', x.locationLabel || 'Lokasi tidak tersedia')}
+        ${renderDetail('Koordinat', fmtCoords(x.latitude, x.longitude))}
+        ${renderDetail('Ukuran File', fmtBytes(x.sizeBytes))}
+        ${renderDetail('Catatan', x.notes || 'Belum ada catatan')}
+      </div>
       <span class="fc-status ${stCls}">${stLbl}</span>
       ${prog}
     </div>`;
@@ -1095,6 +1196,7 @@ function renderLiveSurface() {
     if (current && img && meta) {
       if (current.frameDataUrl) img.src = current.frameDataUrl;
       meta.textContent = `${current.officerName || current.officerId} · ${(current.channelId||'-').toUpperCase()} · ${current.locationLabel || '-'}`;
+      renderLiveViewerDetails(current);
     }
   }
   document.getElementById('s-rec').textContent = allLive.length;

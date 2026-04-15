@@ -252,9 +252,25 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
           (call.arguments as Map?)?.cast<String, dynamic>() ?? const {},
         );
         final state = arguments['state'] as String? ?? '';
+        final isCapturing = arguments['isCapturing'] as bool? ?? false;
         if (!mounted) return;
         setState(() {
-          _isPttConnected = state == 'connected' || state == 'recording';
+          // `reconnecting` dianggap tetap connected dari sudut pandang UI
+          // agar indikator radio tidak berkedip setiap jitter.
+          _isPttConnected = state == 'connected' ||
+              state == 'recording' ||
+              state == 'reconnecting';
+          // Jaga `_isTalking` tetap selaras dengan native. Native adalah
+          // source of truth untuk status mic; Flutter hanya menampilkan.
+          if (isCapturing && !_isTalking) {
+            _isTalking = true;
+            _pttTalkingChannelId ??= _selectedPttChannelId;
+            _pttStartedAt ??= DateTime.now();
+          } else if (!isCapturing && _isTalking && state == 'disconnected') {
+            _isTalking = false;
+            _pttTalkingChannelId = null;
+            _pttStartedAt = null;
+          }
         });
         return;
       case 'pttAudioError':
@@ -263,12 +279,36 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         );
         final message = arguments['message'] as String? ?? '';
         if (!mounted) return;
+        // Saat error fatal, lepas floor server-side juga supaya officer tidak
+        // terkunci ditolak oleh sesi-nya sendiri pada tekan berikutnya.
+        final session = _session;
+        final talkChannelId = _pttTalkingChannelId ?? _selectedPttChannelId;
+        final startedAt = _pttStartedAt;
+        final wasTalking = _isTalking;
         setState(() {
           _isPttConnected = false;
           _isTalking = false;
           _pttTalkingChannelId = null;
           _pttStartedAt = null;
         });
+        if (wasTalking && session != null) {
+          final durationSeconds = startedAt == null
+              ? 0
+              : DateTime.now().difference(startedAt).inSeconds;
+          unawaited(() async {
+            try {
+              await _kDeviceChannel.invokeMethod('stopNativePtt');
+            } catch (_) {}
+            try {
+              await _backend.stopPttTransmit(
+                channelId: talkChannelId,
+                officerId: session.nrp,
+                durationSeconds: durationSeconds,
+              );
+            } catch (_) {}
+            await _refreshPttData();
+          }());
+        }
         if (message.isNotEmpty) {
           _showMessage(message);
         }
@@ -440,7 +480,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         }
         _liveFrameStatus = activeSession.frameCount == 0
             ? 'Menunggu frame live...'
-            : 'Frame ${activeSession.frameCount} · ${_compactTimeFormat.format(DateTime.tryParse(activeSession.lastFrameAtIso)?.toLocal() ?? DateTime.now())}';
+            : 'Frame ${activeSession.frameCount} ï¿½ ${_compactTimeFormat.format(DateTime.tryParse(activeSession.lastFrameAtIso)?.toLocal() ?? DateTime.now())}';
       }
     });
   }
@@ -533,7 +573,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         setState(() {
           _liveFrameCount += 1;
           _liveFrameStatus =
-              'Frame $_liveFrameCount terkirim · stream ${_liveFrameInterval.inSeconds}dt · ${_compactTimeFormat.format(DateTime.now())}';
+              'Frame $_liveFrameCount terkirim ï¿½ stream ${_liveFrameInterval.inSeconds}dt ï¿½ ${_compactTimeFormat.format(DateTime.now())}';
         });
       }
       if (_liveFrameCount <= 1) {
@@ -1206,6 +1246,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       officerName: session.fullName,
       deviceId: 'android_${session.nrp}',
       channelId: _selectedPttChannelId,
+      tagLabel: _selectedTag,
       preferredTransport: 'webrtc',
       fallbackTransport: 'snapshot',
       signalingUrl: _config.liveSignalingWebSocketUrl,
@@ -1420,7 +1461,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     if (_isRecording || _activeLiveSessionId != null) {
       return _liveSignalingStatus.isEmpty
           ? _liveFrameStatus
-          : '$_liveFrameStatus · $_liveSignalingStatus';
+          : '$_liveFrameStatus ï¿½ $_liveSignalingStatus';
     }
     final pending = _pendingCount;
     return pending == 0
@@ -1644,7 +1685,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     if (_isRecording) {
       return _liveSignalingStatus.isEmpty
           ? _liveFrameStatus
-          : '$_liveFrameStatus · $_liveSignalingStatus';
+          : '$_liveFrameStatus ï¿½ $_liveSignalingStatus';
     }
     if (_cameraError != null) {
       return 'Kamera gagal: $_cameraError';
@@ -1671,7 +1712,6 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     _syncBlackoutState();
   }
 }
-
 
 
 

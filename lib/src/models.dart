@@ -427,6 +427,7 @@ class LiveStreamSession {
     required this.status,
     required this.startedAtIso,
     required this.locationLabel,
+    this.tagLabel = 'Lainnya',
     this.channelId = '',
     this.latitude,
     this.longitude,
@@ -446,6 +447,7 @@ class LiveStreamSession {
   final String status;
   final String startedAtIso;
   final String locationLabel;
+  final String tagLabel;
   final String channelId;
   final double? latitude;
   final double? longitude;
@@ -466,6 +468,7 @@ class LiveStreamSession {
       status: json['status'] as String? ?? 'idle',
       startedAtIso: json['startedAtIso'] as String? ?? '',
       locationLabel: json['locationLabel'] as String? ?? 'Lokasi tidak tersedia',
+      tagLabel: json['tagLabel'] as String? ?? 'Lainnya',
       channelId: json['channelId'] as String? ?? '',
       latitude: (json['latitude'] as num?)?.toDouble(),
       longitude: (json['longitude'] as num?)?.toDouble(),
