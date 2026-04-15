@@ -9,23 +9,53 @@ import 'app_config.dart';
 import 'backend_gateway.dart';
 import 'models.dart';
 
+typedef SessionInvalidatedHandler = void Function(String message);
+
 class PolriBackendApi implements BackendGateway {
-  PolriBackendApi({required AppConfig config})
-    : _config = config,
-      _client = ApiClient(
-        baseUrl: config.rootUrl,
-        timeout: Duration(seconds: config.connectTimeoutSeconds),
-      );
+  PolriBackendApi({
+    required AppConfig config,
+    this.onSessionInvalidated,
+  }) : _config = config,
+       _client = ApiClient(
+         baseUrl: config.rootUrl,
+         timeout: Duration(seconds: config.connectTimeoutSeconds),
+       );
 
   final AppConfig _config;
   final ApiClient _client;
+  final SessionInvalidatedHandler? onSessionInvalidated;
 
   static const String _chatFallbackKey = 'chat_threads_api_fallback_v1';
   static const String _reportFallbackKey = 'incident_reports_api_fallback_v1';
   static const String _sosFallbackKey = 'sos_alerts_api_fallback_v1';
 
+  String _authUsername = '';
+  String _authDeviceId = '';
+  String _authSessionToken = '';
+  bool _sessionInvalidationNotified = false;
+
   @override
   String get connectionLabel => 'API ${_config.rootUrl}';
+
+  @override
+  void setAuthContext({
+    required String username,
+    required String deviceId,
+    required String sessionToken,
+  }) {
+    _authUsername = username;
+    _authDeviceId = deviceId;
+    _authSessionToken = sessionToken;
+    _sessionInvalidationNotified = false;
+  }
+
+  @override
+  void clearAuthContext() {
+    _authUsername = '';
+    _authDeviceId = '';
+    _authSessionToken = '';
+    _sessionInvalidationNotified = false;
+  }
 
   @override
   Future<List<PresenceEntry>> loadPresence({String? channelId}) async {
@@ -34,11 +64,12 @@ class PolriBackendApi implements BackendGateway {
         : '?channelId=$channelId';
     try {
       final decoded =
-          await _client.getJson('${_config.presenceEndpoint}$suffix')
-              as List<dynamic>;
+          await _getJson('${_config.presenceEndpoint}$suffix') as List<dynamic>;
       return decoded
           .map((item) => PresenceEntry.fromJson(item as Map<String, dynamic>))
           .toList();
+    } on _SessionInvalidatedException {
+      return const [];
     } catch (_) {
       return const [];
     }
@@ -48,7 +79,7 @@ class PolriBackendApi implements BackendGateway {
   Future<List<PttTransmission>> loadPttFeed({required String channelId}) async {
     try {
       final decoded =
-          await _client.getJson(
+          await _getJson(
                 '${_config.pttFeedEndpoint}?channelId=$channelId',
               )
               as List<dynamic>;
@@ -64,6 +95,8 @@ class PolriBackendApi implements BackendGateway {
           isSystem: json['isSystem'] as bool? ?? false,
         );
       }).toList();
+    } on _SessionInvalidatedException {
+      return const [];
     } catch (_) {
       return const [];
     }
@@ -76,7 +109,7 @@ class PolriBackendApi implements BackendGateway {
     required String deviceId,
   }) async {
     try {
-      final response = await _client.postJsonWithStatus(
+      final response = await _postJsonWithStatus(
         _config.pttTransmitStartEndpoint,
         {'channelId': channelId, 'officerId': officerId, 'deviceId': deviceId},
       );
@@ -102,6 +135,11 @@ class PolriBackendApi implements BackendGateway {
         sessionId: body['sessionId'] as String? ?? '',
         message: 'Jalur PTT aktif.',
       );
+    } on _SessionInvalidatedException {
+      return const PttStartResult(
+        granted: false,
+        message: 'Sesi login sudah dipakai perangkat lain.',
+      );
     } catch (_) {
       return const PttStartResult(
         granted: false,
@@ -117,11 +155,13 @@ class PolriBackendApi implements BackendGateway {
     required int durationSeconds,
   }) async {
     try {
-      await _client.postJson(_config.pttTransmitStopEndpoint, {
+      await _postJson(_config.pttTransmitStopEndpoint, {
         'channelId': channelId,
         'officerId': officerId,
         'durationSeconds': durationSeconds,
       });
+    } on _SessionInvalidatedException {
+      return;
     } catch (_) {}
   }
 
@@ -135,7 +175,7 @@ class PolriBackendApi implements BackendGateway {
     double? longitude,
   }) async {
     try {
-      await _client.postJson('${_config.presenceEndpoint}/heartbeat', {
+      await _postJson('${_config.presenceEndpoint}/heartbeat', {
         'username': username,
         'deviceId': deviceId,
         'status': status,
@@ -144,26 +184,16 @@ class PolriBackendApi implements BackendGateway {
         'latitude': latitude,
         'longitude': longitude,
       });
+    } on _SessionInvalidatedException {
+      return;
     } catch (_) {}
-  }
-
-  Color _parseColor(String? hex) {
-    if (hex == null || hex.isEmpty) {
-      return const Color(0xFF6DE7C6);
-    }
-    final normalized = hex.replaceFirst('#', '');
-    final value = int.tryParse(
-      normalized.length == 6 ? 'FF$normalized' : normalized,
-      radix: 16,
-    );
-    return Color(value ?? 0xFF6DE7C6);
   }
 
   @override
   Future<Map<String, List<ChatMessage>>> loadChatThreads() async {
     try {
       final decoded =
-          await _client.getJson(_config.chatsEndpoint) as Map<String, dynamic>;
+          await _getJson(_config.chatsEndpoint) as Map<String, dynamic>;
       return decoded.map(
         (key, value) => MapEntry(
           key,
@@ -172,6 +202,8 @@ class PolriBackendApi implements BackendGateway {
               .toList(),
         ),
       );
+    } on _SessionInvalidatedException {
+      return _loadThreadFallback();
     } catch (_) {
       return _loadThreadFallback();
     }
@@ -180,12 +212,14 @@ class PolriBackendApi implements BackendGateway {
   @override
   Future<void> saveChatThreads(Map<String, List<ChatMessage>> threads) async {
     try {
-      await _client.postJson(_config.chatsEndpoint, {
+      await _postJson(_config.chatsEndpoint, {
         'threads': threads.map(
           (key, value) =>
               MapEntry(key, value.map((item) => item.toJson()).toList()),
         ),
       });
+    } on _SessionInvalidatedException {
+      return;
     } catch (_) {
       await _saveThreadFallback(threads);
     }
@@ -194,11 +228,12 @@ class PolriBackendApi implements BackendGateway {
   @override
   Future<List<IncidentReport>> loadReports() async {
     try {
-      final decoded =
-          await _client.getJson(_config.reportsEndpoint) as List<dynamic>;
+      final decoded = await _getJson(_config.reportsEndpoint) as List<dynamic>;
       return decoded
           .map((item) => IncidentReport.fromJson(item as Map<String, dynamic>))
           .toList();
+    } on _SessionInvalidatedException {
+      return _loadReportsFallback();
     } catch (_) {
       return _loadReportsFallback();
     }
@@ -207,9 +242,11 @@ class PolriBackendApi implements BackendGateway {
   @override
   Future<void> saveReports(List<IncidentReport> reports) async {
     try {
-      await _client.postJson(_config.reportsEndpoint, {
+      await _postJson(_config.reportsEndpoint, {
         'reports': reports.map((item) => item.toJson()).toList(),
       });
+    } on _SessionInvalidatedException {
+      return;
     } catch (_) {
       await _saveReportsFallback(reports);
     }
@@ -218,11 +255,12 @@ class PolriBackendApi implements BackendGateway {
   @override
   Future<List<SosAlert>> loadSosAlerts() async {
     try {
-      final decoded =
-          await _client.getJson(_config.sosEndpoint) as List<dynamic>;
+      final decoded = await _getJson(_config.sosEndpoint) as List<dynamic>;
       return decoded
           .map((item) => SosAlert.fromJson(item as Map<String, dynamic>))
           .toList();
+    } on _SessionInvalidatedException {
+      return _loadSosFallback();
     } catch (_) {
       return _loadSosFallback();
     }
@@ -232,12 +270,14 @@ class PolriBackendApi implements BackendGateway {
   Future<List<LiveStreamSession>> loadLiveSessions() async {
     try {
       final decoded =
-          await _client.getJson(_config.liveSessionsEndpoint) as List<dynamic>;
+          await _getJson(_config.liveSessionsEndpoint) as List<dynamic>;
       return decoded
           .map(
             (item) => LiveStreamSession.fromJson(item as Map<String, dynamic>),
           )
           .toList();
+    } on _SessionInvalidatedException {
+      return const [];
     } catch (_) {
       return const [];
     }
@@ -258,7 +298,7 @@ class PolriBackendApi implements BackendGateway {
     String? locationLabel,
   }) async {
     try {
-      final response = await _client.postJson(_config.liveSessionsEndpoint, {
+      final response = await _postJson(_config.liveSessionsEndpoint, {
         'officerId': officerId,
         'officerName': officerName,
         'deviceId': deviceId,
@@ -277,6 +317,8 @@ class PolriBackendApi implements BackendGateway {
         'locationLabel': locationLabel ?? 'Lokasi tidak tersedia',
       });
       return LiveStreamSession.fromJson(response as Map<String, dynamic>);
+    } on _SessionInvalidatedException {
+      return null;
     } catch (_) {
       return null;
     }
@@ -292,7 +334,7 @@ class PolriBackendApi implements BackendGateway {
     String? locationLabel,
   }) async {
     try {
-      await _client.postJson('${_config.liveSessionsEndpoint}/frame', {
+      await _postJson('${_config.liveSessionsEndpoint}/frame', {
         'sessionId': sessionId,
         'officerId': officerId,
         'frameDataUrl': frameDataUrl,
@@ -300,6 +342,8 @@ class PolriBackendApi implements BackendGateway {
         'longitude': longitude,
         'locationLabel': locationLabel ?? 'Lokasi tidak tersedia',
       });
+    } on _SessionInvalidatedException {
+      return;
     } catch (_) {}
   }
 
@@ -309,10 +353,12 @@ class PolriBackendApi implements BackendGateway {
     required String officerId,
   }) async {
     try {
-      await _client.postJson('${_config.liveSessionsEndpoint}/stop', {
+      await _postJson('${_config.liveSessionsEndpoint}/stop', {
         'sessionId': sessionId,
         'officerId': officerId,
       });
+    } on _SessionInvalidatedException {
+      return;
     } catch (_) {}
   }
 
@@ -344,11 +390,13 @@ class PolriBackendApi implements BackendGateway {
       'notes': notes ?? '',
     };
     try {
-      final response = await _client.postJson(_config.sosEndpoint, payload);
+      final response = await _postJson(_config.sosEndpoint, payload);
       final alert = SosAlert.fromJson(response as Map<String, dynamic>);
       final existing = await _loadSosFallback();
       await _saveSosFallback([alert, ...existing]);
       return alert;
+    } on _SessionInvalidatedException {
+      return null;
     } catch (_) {
       final alert = SosAlert(
         id: 'SOS_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}',
@@ -386,10 +434,12 @@ class PolriBackendApi implements BackendGateway {
     currentThreads[threadName] = updated;
 
     try {
-      await _client.postJson('${_config.chatsEndpoint}/message', {
+      await _postJson('${_config.chatsEndpoint}/message', {
         'threadName': threadName,
         'message': {'fromMe': true, 'text': text, 'timeLabel': now},
       });
+    } on _SessionInvalidatedException {
+      return currentThreads[threadName] ?? const <ChatMessage>[];
     } catch (_) {}
 
     await _saveThreadFallback(currentThreads);
@@ -402,16 +452,17 @@ class PolriBackendApi implements BackendGateway {
     required Map<String, List<ChatMessage>> currentThreads,
   }) async {
     try {
-      final response = await _client.postJson(
-        '${_config.chatsEndpoint}/auto-reply',
-        {'threadName': threadName},
-      );
+      final response = await _postJson('${_config.chatsEndpoint}/auto-reply', {
+        'threadName': threadName,
+      });
       final items = (response['messages'] as List<dynamic>)
           .map((item) => ChatMessage.fromJson(item as Map<String, dynamic>))
           .toList();
       currentThreads[threadName] = items;
       await _saveThreadFallback(currentThreads);
       return items;
+    } on _SessionInvalidatedException {
+      return currentThreads[threadName] ?? const <ChatMessage>[];
     } catch (_) {
       final fallback = ChatMessage(
         fromMe: false,
@@ -448,7 +499,9 @@ class PolriBackendApi implements BackendGateway {
     );
 
     try {
-      await _client.postJson(_config.reportsEndpoint, report.toJson());
+      await _postJson(_config.reportsEndpoint, report.toJson());
+    } on _SessionInvalidatedException {
+      return report;
     } catch (_) {}
 
     final updated = [report, ...currentReports];
@@ -502,6 +555,81 @@ class PolriBackendApi implements BackendGateway {
     final updated = [...recordings];
     updated[activeIndex] = updatedEntry;
     return updated;
+  }
+
+  Map<String, String>? _authHeaders() {
+    if (_authUsername.isEmpty ||
+        _authDeviceId.isEmpty ||
+        _authSessionToken.isEmpty) {
+      return null;
+    }
+    return {
+      'X-Auth-Username': _authUsername,
+      'X-Auth-Device-Id': _authDeviceId,
+      'X-Auth-Session-Token': _authSessionToken,
+    };
+  }
+
+  Future<dynamic> _getJson(String endpoint) async {
+    final response = await _client.getJsonWithStatus(
+      endpoint,
+      headers: _authHeaders(),
+    );
+    if (response.statusCode == 401) {
+      _handleUnauthorized(response.body);
+      throw const _SessionInvalidatedException();
+    }
+    return response.body;
+  }
+
+  Future<ApiResponse> _postJsonWithStatus(
+    String endpoint,
+    Map<String, dynamic> body,
+  ) async {
+    final response = await _client.postJsonWithStatus(
+      endpoint,
+      body,
+      headers: _authHeaders(),
+    );
+    if (response.statusCode == 401) {
+      _handleUnauthorized(response.body);
+      throw const _SessionInvalidatedException();
+    }
+    return response;
+  }
+
+  Future<dynamic> _postJson(String endpoint, Map<String, dynamic> body) async {
+    final response = await _postJsonWithStatus(endpoint, body);
+    return response.body;
+  }
+
+  void _handleUnauthorized(dynamic body) {
+    if (_sessionInvalidationNotified) return;
+    _sessionInvalidationNotified = true;
+    final json = body is Map ? Map<String, dynamic>.from(body) : const {};
+    final code = json['code'] as String? ?? '';
+    final message = json['error'] as String? ?? '';
+    onSessionInvalidated?.call(
+      code == 'session_taken_over'
+          ? (message.isEmpty
+                ? 'Sesi akun ini sudah diambil alih perangkat lain.'
+                : message)
+          : (message.isEmpty
+                ? 'Sesi login tidak lagi valid. Silakan login ulang.'
+                : message),
+    );
+  }
+
+  Color _parseColor(String? hex) {
+    if (hex == null || hex.isEmpty) {
+      return const Color(0xFF6DE7C6);
+    }
+    final normalized = hex.replaceFirst('#', '');
+    final value = int.tryParse(
+      normalized.length == 6 ? 'FF$normalized' : normalized,
+      radix: 16,
+    );
+    return Color(value ?? 0xFF6DE7C6);
   }
 
   Future<Map<String, List<ChatMessage>>> _loadThreadFallback() async {
@@ -574,4 +702,8 @@ class PolriBackendApi implements BackendGateway {
     'Siap. Telemetri sudah masuk.',
     'Command center menerima update Anda.',
   ];
+}
+
+class _SessionInvalidatedException implements Exception {
+  const _SessionInvalidatedException();
 }

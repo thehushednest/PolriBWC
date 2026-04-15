@@ -17,6 +17,16 @@ class MockBackendService implements BackendGateway {
   String get connectionLabel => 'Mock backend lokal';
 
   @override
+  void clearAuthContext() {}
+
+  @override
+  void setAuthContext({
+    required String username,
+    required String deviceId,
+    required String sessionToken,
+  }) {}
+
+  @override
   Future<List<PresenceEntry>> loadPresence({String? channelId}) async =>
       const [];
 

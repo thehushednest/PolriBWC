@@ -13,6 +13,8 @@ class OfficerSession {
     required this.shiftLabel,
     required this.shiftWindow,
     required this.nrp,
+    required this.deviceId,
+    required this.sessionToken,
   });
 
   final String officerName;
@@ -21,8 +23,36 @@ class OfficerSession {
   final String shiftLabel;
   final String shiftWindow;
   final String nrp;
+  final String deviceId;
+  final String sessionToken;
 
   String get fullName => '$rankLabel $officerName';
+
+  Map<String, dynamic> toJson() {
+    return {
+      'nrp': nrp,
+      'officerName': officerName,
+      'rankLabel': rankLabel,
+      'unitName': unitName,
+      'shiftLabel': shiftLabel,
+      'shiftWindow': shiftWindow,
+      'deviceId': deviceId,
+      'sessionToken': sessionToken,
+    };
+  }
+
+  factory OfficerSession.fromJson(Map<String, dynamic> json) {
+    return OfficerSession(
+      nrp: json['nrp'] as String,
+      officerName: json['officerName'] as String,
+      rankLabel: json['rankLabel'] as String? ?? '',
+      unitName: json['unitName'] as String? ?? '',
+      shiftLabel: json['shiftLabel'] as String? ?? '',
+      shiftWindow: json['shiftWindow'] as String? ?? '',
+      deviceId: json['deviceId'] as String,
+      sessionToken: json['sessionToken'] as String,
+    );
+  }
 }
 
 class PermissionSummary {

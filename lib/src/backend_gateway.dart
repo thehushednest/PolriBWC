@@ -1,6 +1,12 @@
 import 'models.dart';
 
 abstract class BackendGateway {
+  void setAuthContext({
+    required String username,
+    required String deviceId,
+    required String sessionToken,
+  });
+  void clearAuthContext();
   Future<List<PresenceEntry>> loadPresence({String? channelId});
   Future<List<PttTransmission>> loadPttFeed({required String channelId});
   Future<PttStartResult> startPttTransmit({

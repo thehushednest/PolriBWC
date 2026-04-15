@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -212,7 +213,10 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   void initState() {
     super.initState();
     _config = AppConfig.fromEnvironment();
-    _backend = PolriBackendApi(config: _config);
+    _backend = PolriBackendApi(
+      config: _config,
+      onSessionInvalidated: _handleBackendSessionInvalidated,
+    );
     _pttWebRtcService = PttWebRtcService(
       onState: _handlePttStateEvent,
       onError: _handlePttErrorEvent,
@@ -361,7 +365,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     final result = await _backend.startPttTransmit(
       channelId: talkChannelId,
       officerId: session.nrp,
-      deviceId: 'android_${session.nrp}',
+      deviceId: session.deviceId,
     );
     if (!result.granted) {
       if (result.message.isNotEmpty) {
@@ -705,7 +709,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         url: config.pttSignalingWebSocketUrl,
         username: session.nrp,
         channelId: _selectedPttChannelId,
-        deviceId: 'android_${session.nrp}',
+        deviceId: session.deviceId,
       );
       await _kDeviceChannel.invokeMethod('startPersistentMode');
       await _updateNotification();
@@ -873,15 +877,15 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
           sessionId: _activeLiveSessionId!,
           officerId: _session!.nrp,
           officerName: _session!.fullName,
-          deviceId: 'android_${_session!.nrp}',
+          deviceId: _session!.deviceId,
           status: 'live',
           startedAtIso: DateTime.now().toIso8601String(),
           locationLabel: _currentLat == null
               ? 'Lokasi belum tersedia'
               : 'Lat ${_currentLat!.toStringAsFixed(4)}, Lng ${_currentLng!.toStringAsFixed(4)}',
           channelId: _selectedPttChannelId,
-          transport: 'webrtc',
-          signalingUrl: _config.liveSignalingWebSocketUrl,
+          transport: 'snapshot',
+          signalingUrl: '',
         );
         unawaited(_connectLiveSignaling(liveSession));
       }
@@ -893,22 +897,54 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   }
 
   static const _sessionPrefsKey = 'officer_session_v1';
+  static const _deviceIdPrefsKey = 'officer_device_id_v1';
+  bool _isHandlingSessionInvalidation = false;
+
+  Future<String> _getOrCreateDeviceId([SharedPreferences? prefs]) async {
+    final store = prefs ?? await SharedPreferences.getInstance();
+    final existing = store.getString(_deviceIdPrefsKey);
+    if (existing != null && existing.isNotEmpty) {
+      return existing;
+    }
+    final random = Random.secure();
+    final suffix = List.generate(
+      8,
+      (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    ).join();
+    final deviceId =
+        'android_${DateTime.now().millisecondsSinceEpoch.toRadixString(16)}_$suffix';
+    await store.setString(_deviceIdPrefsKey, deviceId);
+    return deviceId;
+  }
+
+  void _handleBackendSessionInvalidated(String message) {
+    if (!mounted || _isHandlingSessionInvalidation) {
+      return;
+    }
+    _isHandlingSessionInvalidation = true;
+    _showMessage(message);
+    _logout(notifyServer: false);
+    Future<void>.delayed(const Duration(milliseconds: 400), () {
+      _isHandlingSessionInvalidation = false;
+    });
+  }
 
   Future<void> _initialize() async {
     final prefs = await SharedPreferences.getInstance();
+    final deviceId = await _getOrCreateDeviceId(prefs);
     final sessionRaw = prefs.getString(_sessionPrefsKey);
     OfficerSession? restoredSession;
     if (sessionRaw != null) {
       try {
         final data = jsonDecode(sessionRaw) as Map<String, dynamic>;
-        restoredSession = OfficerSession(
-          nrp: data['nrp'] as String,
-          officerName: data['officerName'] as String,
-          rankLabel: data['rankLabel'] as String? ?? '',
-          unitName: data['unitName'] as String? ?? '',
-          shiftLabel: data['shiftLabel'] as String? ?? '',
-          shiftWindow: data['shiftWindow'] as String? ?? '',
-        );
+        if ((data['sessionToken'] as String? ?? '').isNotEmpty) {
+          restoredSession = OfficerSession.fromJson({
+            ...data,
+            'deviceId': data['deviceId'] ?? deviceId,
+          });
+        } else {
+          await prefs.remove(_sessionPrefsKey);
+        }
       } catch (_) {}
     }
 
@@ -942,6 +978,11 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     });
 
     if (restoredSession != null) {
+      _backend.setAuthContext(
+        username: restoredSession.nrp,
+        deviceId: restoredSession.deviceId,
+        sessionToken: restoredSession.sessionToken,
+      );
       unawaited(_connectNativePtt(restoredSession));
       unawaited(_sendPresenceHeartbeat());
       unawaited(_refreshSosAlerts());
@@ -1106,6 +1147,8 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     }
 
     final config = _config;
+    final prefs = await SharedPreferences.getInstance();
+    final deviceId = await _getOrCreateDeviceId(prefs);
     OfficerSession? session;
     var serverReachable = false;
 
@@ -1118,6 +1161,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       final result = await client.postJsonWithStatus('/auth/login', {
         'username': username,
         'password': password,
+        'deviceId': deviceId,
       });
       serverReachable = true;
       if (result.statusCode == 200) {
@@ -1129,6 +1173,8 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
           shiftLabel: body['shiftLabel'] as String? ?? '',
           shiftWindow: body['shiftWindow'] as String? ?? '',
           nrp: body['nrp'] as String? ?? username,
+          deviceId: body['deviceId'] as String? ?? deviceId,
+          sessionToken: body['sessionToken'] as String? ?? '',
         );
       } else if (result.statusCode == 401) {
         _showMessage('Username atau password salah.');
@@ -1165,21 +1211,21 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         shiftLabel: local.shift,
         shiftWindow: local.window,
         nrp: username,
+        deviceId: deviceId,
+        sessionToken: 'mock_${DateTime.now().millisecondsSinceEpoch}',
       );
     }
 
     // Simpan sesi ke persistent storage agar tidak logout saat hp dikunci.
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      _sessionPrefsKey,
-      jsonEncode({
-        'nrp': session.nrp,
-        'officerName': session.officerName,
-        'rankLabel': session.rankLabel,
-        'unitName': session.unitName,
-        'shiftLabel': session.shiftLabel,
-        'shiftWindow': session.shiftWindow,
-      }),
+    if (session.sessionToken.isEmpty) {
+      _showMessage('Login server belum memberi token sesi. Coba lagi.');
+      return;
+    }
+    await prefs.setString(_sessionPrefsKey, jsonEncode(session.toJson()));
+    _backend.setAuthContext(
+      username: session.nrp,
+      deviceId: session.deviceId,
+      sessionToken: session.sessionToken,
     );
 
     setState(() {
@@ -1230,7 +1276,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
 
     await _backend.updatePresence(
       username: session.nrp,
-      deviceId: 'android_${session.nrp}',
+      deviceId: session.deviceId,
       status: _isTalking
           ? 'ptt'
           : _isRecording
@@ -1243,16 +1289,17 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     await _refreshPttData();
   }
 
-  void _logout() {
+  void _logout({bool notifyServer = true}) {
     final session = _session;
     final liveSessionId = _activeLiveSessionId;
+    _backend.clearAuthContext();
     SharedPreferences.getInstance().then(
       (prefs) => prefs.remove(_sessionPrefsKey),
     );
     _pttRefreshTimer?.cancel();
     _liveRefreshTimer?.cancel();
     _sosPollTimer?.cancel();
-    if (session != null) {
+    if (notifyServer && session != null) {
       if (liveSessionId != null) {
         unawaited(
           _backend.stopLiveStream(
@@ -1264,7 +1311,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       unawaited(
         _backend.updatePresence(
           username: session.nrp,
-          deviceId: 'android_${session.nrp}',
+          deviceId: session.deviceId,
           status: 'offline',
           activeChannelId: _pttTalkingChannelId ?? _selectedPttChannelId,
           latitude: _currentLat,
@@ -1348,7 +1395,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     final liveSession = await _backend.startLiveStream(
       officerId: session.nrp,
       officerName: session.fullName,
-      deviceId: 'android_${session.nrp}',
+      deviceId: session.deviceId,
       channelId: _selectedPttChannelId,
       tagLabel: _selectedTag,
       preferredTransport: 'snapshot',
@@ -1486,7 +1533,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     final alert = await _backend.triggerSos(
       officerId: session.nrp,
       officerName: session.fullName.trim(),
-      deviceId: 'android_${session.nrp}',
+      deviceId: session.deviceId,
       channelId: _pttTalkingChannelId ?? _selectedPttChannelId,
       source: source,
       recordingId: recordingId,

@@ -287,10 +287,11 @@ Future<void> _handleRequest(
       final body = await _readJson(request);
       final username = (body['username'] as String? ?? '').trim();
       final password = (body['password'] as String? ?? '').trim();
-      if (username.isEmpty || password.isEmpty) {
+      final deviceId = (body['deviceId'] as String? ?? '').trim();
+      if (username.isEmpty || password.isEmpty || deviceId.isEmpty) {
         response.statusCode = HttpStatus.badRequest;
         return _writeJson(response, {
-          'error': 'username dan password wajib diisi',
+          'error': 'username, password, dan deviceId wajib diisi',
         });
       }
       final user = store.state.users[username];
@@ -298,6 +299,38 @@ Future<void> _handleRequest(
         response.statusCode = HttpStatus.unauthorized;
         return _writeJson(response, {'error': 'Username atau password salah'});
       }
+      var nextState = store.state;
+      final existingSession = nextState.activeAuthSessions[username];
+      final existingDeviceId =
+          (existingSession?['deviceId'] as String? ?? '').trim();
+      final isTakeover =
+          existingSession != null &&
+          existingSession.isNotEmpty &&
+          existingDeviceId.isNotEmpty &&
+          existingDeviceId != deviceId;
+      if (isTakeover) {
+        nextState = _releaseOfficerFloor(nextState, username);
+        nextState = _releaseOfficerLiveSessions(nextState, username);
+        nextState = _dropOfficerPresence(nextState, username);
+        stdout.writeln(
+          '[${_clockNow()}][auth] login takeover: $username dari $existingDeviceId -> $deviceId',
+        );
+      }
+      final sessionToken = _issueSessionToken();
+      nextState = nextState.copyWith(
+        activeAuthSessions: {
+          ...nextState.activeAuthSessions,
+          username: {
+            'username': username,
+            'deviceId': deviceId,
+            'sessionToken': sessionToken,
+            'issuedAtIso': DateTime.now().toUtc().toIso8601String(),
+            'lastSeenIso': DateTime.now().toUtc().toIso8601String(),
+          },
+        },
+      );
+      store.state = nextState;
+      await store.save();
       stdout.writeln('[${_clockNow()}][auth] login berhasil: $username');
       return _writeJson(response, {
         'officerName': user['officerName'],
@@ -306,6 +339,9 @@ Future<void> _handleRequest(
         'shiftLabel': user['shiftLabel'],
         'shiftWindow': user['shiftWindow'],
         'nrp': user['nrp'] ?? username,
+        'deviceId': deviceId,
+        'sessionToken': sessionToken,
+        'sessionMode': isTakeover ? 'takeover' : 'fresh',
       });
     }
 
@@ -321,6 +357,10 @@ Future<void> _handleRequest(
       if (username.isEmpty) {
         response.statusCode = HttpStatus.badRequest;
         return _writeJson(response, {'error': 'username required'});
+      }
+      final validation = _validateActiveSession(store.state, request, body);
+      if (!validation.ok) {
+        return _rejectSessionRequest(response, validation);
       }
       final existing = store.state.presence[username] ?? const {};
       final updated = {
@@ -338,6 +378,7 @@ Future<void> _handleRequest(
         },
       };
       var nextState = store.state.copyWith(presence: updated);
+      nextState = _touchActiveSession(nextState, validation);
       nextState = _cleanupStalePttSessions(nextState);
       final status = body['status'] as String? ?? 'online';
       if (status == 'offline') {
@@ -361,6 +402,10 @@ Future<void> _handleRequest(
       if (officerId.isEmpty) {
         response.statusCode = HttpStatus.badRequest;
         return _writeJson(response, {'error': 'officerId required'});
+      }
+      final validation = _validateActiveSession(store.state, request, body);
+      if (!validation.ok) {
+        return _rejectSessionRequest(response, validation);
       }
       const transport = 'snapshot';
       final sessionId =
@@ -392,7 +437,10 @@ Future<void> _handleRequest(
               (_, value) => (value['officerId'] as String? ?? '') == officerId,
             )
             ..[sessionId] = liveSession;
-      store.state = store.state.copyWith(liveSessions: updatedLive);
+      store.state = _touchActiveSession(
+        store.state.copyWith(liveSessions: updatedLive),
+        validation,
+      );
       await store.save();
       liveWebSocketRelay.broadcastSnapshot(_resolvedLiveSessions(store));
       stdout.writeln(
@@ -407,6 +455,10 @@ Future<void> _handleRequest(
       if (sessionId.isEmpty) {
         response.statusCode = HttpStatus.badRequest;
         return _writeJson(response, {'error': 'sessionId required'});
+      }
+      final validation = _validateActiveSession(store.state, request, body);
+      if (!validation.ok) {
+        return _rejectSessionRequest(response, validation);
       }
       final current = store.state.liveSessions[sessionId];
       if (current == null || current.isEmpty) {
@@ -427,7 +479,10 @@ Future<void> _handleRequest(
         'locationLabel': body['locationLabel'] ?? current['locationLabel'],
         'tagLabel': body['tagLabel'] ?? current['tagLabel'],
       };
-      store.state = store.state.copyWith(liveSessions: updatedLive);
+      store.state = _touchActiveSession(
+        store.state.copyWith(liveSessions: updatedLive),
+        validation,
+      );
       stdout.writeln(
         '[${_clockNow()}][live-frame] session=$sessionId officer=${current['officerId'] ?? '-'} frame=$frameCount bytes=${(body['frameDataUrl'] as String? ?? '').length}',
       );
@@ -443,6 +498,10 @@ Future<void> _handleRequest(
       final body = await _readJson(request);
       final sessionId = body['sessionId'] as String? ?? '';
       final officerId = body['officerId'] as String? ?? '';
+      final validation = _validateActiveSession(store.state, request, body);
+      if (!validation.ok) {
+        return _rejectSessionRequest(response, validation);
+      }
       final updatedLive = Map<String, Map<String, dynamic>>.from(
         store.state.liveSessions,
       );
@@ -462,7 +521,10 @@ Future<void> _handleRequest(
           removed = true;
         }
       }
-      store.state = store.state.copyWith(liveSessions: updatedLive);
+      store.state = _touchActiveSession(
+        store.state.copyWith(liveSessions: updatedLive),
+        validation,
+      );
       await store.save();
       liveWebSocketRelay.broadcastSnapshot(_resolvedLiveSessions(store));
       stdout.writeln(
@@ -477,17 +539,28 @@ Future<void> _handleRequest(
 
     if (method == 'POST' && path == '/api/v1/chats') {
       final body = await _readJson(request);
+      final validation = _validateActiveSession(store.state, request, body);
+      if (!validation.ok) {
+        return _rejectSessionRequest(response, validation);
+      }
       final threads = (body['threads'] as Map<String, dynamic>? ?? {}).map(
         (key, value) =>
             MapEntry(key, List<Map<String, dynamic>>.from(value as List)),
       );
-      store.state = store.state.copyWith(chatThreads: threads);
+      store.state = _touchActiveSession(
+        store.state.copyWith(chatThreads: threads),
+        validation,
+      );
       await store.save();
       return _writeJson(response, {'status': 'saved'});
     }
 
     if (method == 'POST' && path == '/api/v1/chats/message') {
       final body = await _readJson(request);
+      final validation = _validateActiveSession(store.state, request, body);
+      if (!validation.ok) {
+        return _rejectSessionRequest(response, validation);
+      }
       final threadName = body['threadName'] as String? ?? 'Unknown';
       final message = Map<String, dynamic>.from(body['message'] as Map? ?? {});
       final current = [
@@ -495,13 +568,20 @@ Future<void> _handleRequest(
       ];
       current.add(message);
       final updated = {...store.state.chatThreads, threadName: current};
-      store.state = store.state.copyWith(chatThreads: updated);
+      store.state = _touchActiveSession(
+        store.state.copyWith(chatThreads: updated),
+        validation,
+      );
       await store.save();
       return _writeJson(response, {'status': 'appended'});
     }
 
     if (method == 'POST' && path == '/api/v1/chats/auto-reply') {
       final body = await _readJson(request);
+      final validation = _validateActiveSession(store.state, request, body);
+      if (!validation.ok) {
+        return _rejectSessionRequest(response, validation);
+      }
       final threadName = body['threadName'] as String? ?? 'Unknown';
       final current = [
         ...(store.state.chatThreads[threadName] ?? <Map<String, dynamic>>[]),
@@ -512,7 +592,10 @@ Future<void> _handleRequest(
         'timeLabel': _clockNow(),
       });
       final updated = {...store.state.chatThreads, threadName: current};
-      store.state = store.state.copyWith(chatThreads: updated);
+      store.state = _touchActiveSession(
+        store.state.copyWith(chatThreads: updated),
+        validation,
+      );
       await store.save();
       return _writeJson(response, {'messages': current});
     }
@@ -523,8 +606,15 @@ Future<void> _handleRequest(
 
     if (method == 'POST' && path == '/api/v1/reports') {
       final body = await _readJson(request);
+      final validation = _validateActiveSession(store.state, request, body);
+      if (!validation.ok) {
+        return _rejectSessionRequest(response, validation);
+      }
       final reports = [Map<String, dynamic>.from(body), ...store.state.reports];
-      store.state = store.state.copyWith(reports: reports);
+      store.state = _touchActiveSession(
+        store.state.copyWith(reports: reports),
+        validation,
+      );
       await store.save();
       return _writeJson(response, {'status': 'saved'});
     }
@@ -536,6 +626,10 @@ Future<void> _handleRequest(
     if (method == 'POST' && path == '/api/v1/sos') {
       final body = await _readJson(request);
       final officerId = body['officerId'] as String? ?? '';
+      final validation = _validateActiveSession(store.state, request, body);
+      if (!validation.ok) {
+        return _rejectSessionRequest(response, validation);
+      }
       final officerName = body['officerName'] as String? ?? officerId;
       final channelId = body['channelId'] as String? ?? '';
       final locationLabel =
@@ -558,7 +652,10 @@ Future<void> _handleRequest(
         'notes': body['notes'] as String? ?? '',
       };
       final alerts = [alert, ...store.state.sosAlerts].take(50).toList();
-      store.state = store.state.copyWith(sosAlerts: alerts);
+      store.state = _touchActiveSession(
+        store.state.copyWith(sosAlerts: alerts),
+        validation,
+      );
       await store.save();
       stdout.writeln(
         '[${_clockNow()}][SOS] ${officerId.isEmpty ? 'unknown' : officerId} @ ${channelId.isEmpty ? '-' : channelId.toUpperCase()} | $locationLabel',
@@ -613,6 +710,10 @@ Future<void> _handleRequest(
         response.statusCode = HttpStatus.badRequest;
         return _writeJson(response, {'error': 'officerId required'});
       }
+      final validation = _validateActiveSession(store.state, request, body);
+      if (!validation.ok) {
+        return _rejectSessionRequest(response, validation);
+      }
       store.state = _cleanupStalePttSessions(store.state);
       final activeSession = _activeSessionForChannel(store.state, channelId);
       if (activeSession != null) {
@@ -662,10 +763,13 @@ Future<void> _handleRequest(
         ...store.state.activePttSessions,
         channelId: newSession,
       };
-      store.state = store.state.copyWith(
-        presence: updatedPresence,
-        activePttSession: newSession,
-        activePttSessions: updatedSessions,
+      store.state = _touchActiveSession(
+        store.state.copyWith(
+          presence: updatedPresence,
+          activePttSession: newSession,
+          activePttSessions: updatedSessions,
+        ),
+        validation,
       );
       await store.save();
       _printPresenceSnapshot(store, reason: 'ptt-start');
@@ -679,6 +783,10 @@ Future<void> _handleRequest(
       final body = await _readJson(request);
       final channelId = body['channelId'] as String? ?? 'ch3';
       final requestedOfficerId = body['officerId'] as String? ?? '';
+      final validation = _validateActiveSession(store.state, request, body);
+      if (!validation.ok) {
+        return _rejectSessionRequest(response, validation);
+      }
       store.state = _cleanupStalePttSessions(store.state);
       final activeSession = _activeSessionForChannel(store.state, channelId);
       if (activeSession == null) {
@@ -714,10 +822,13 @@ Future<void> _handleRequest(
       };
       final updatedSessions = {...store.state.activePttSessions}
         ..remove(channelId);
-      store.state = store.state.copyWith(
-        activePttSession: _primaryActiveSession(updatedSessions),
-        activePttSessions: updatedSessions,
-        pttFeeds: updatedFeeds,
+      store.state = _touchActiveSession(
+        store.state.copyWith(
+          activePttSession: _primaryActiveSession(updatedSessions),
+          activePttSessions: updatedSessions,
+          pttFeeds: updatedFeeds,
+        ),
+        validation,
       );
       await store.save();
       _printPresenceSnapshot(store, reason: 'ptt-stop');
@@ -739,7 +850,7 @@ void _applyCors(HttpResponse response) {
   response.headers.set('Access-Control-Allow-Origin', '*');
   response.headers.set(
     'Access-Control-Allow-Headers',
-    'Content-Type, Authorization',
+    'Content-Type, Authorization, X-Auth-Username, X-Auth-Device-Id, X-Auth-Session-Token',
   );
   response.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
 }
@@ -1436,6 +1547,125 @@ LocalServerState _releaseOfficerLiveSessions(
   return state.copyWith(liveSessions: cleaned);
 }
 
+LocalServerState _dropOfficerPresence(
+  LocalServerState state,
+  String officerId,
+) {
+  if (officerId.isEmpty || !state.presence.containsKey(officerId)) {
+    return state;
+  }
+  final cleaned = {...state.presence}..remove(officerId);
+  return state.copyWith(presence: cleaned);
+}
+
+String _issueSessionToken() {
+  final random = Random.secure();
+  final bytes = List.generate(
+    24,
+    (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
+  return 'sess_$bytes';
+}
+
+String _requestAuthUsername(HttpRequest request, Map<String, dynamic> body) {
+  return (request.headers.value('x-auth-username') ??
+          body['username'] ??
+          body['officerId'] ??
+          '')
+      .toString()
+      .trim();
+}
+
+String _requestAuthDeviceId(HttpRequest request, Map<String, dynamic> body) {
+  return (request.headers.value('x-auth-device-id') ?? body['deviceId'] ?? '')
+      .toString()
+      .trim();
+}
+
+String _requestAuthSessionToken(HttpRequest request, Map<String, dynamic> body) {
+  return (request.headers.value('x-auth-session-token') ??
+          body['sessionToken'] ??
+          '')
+      .toString()
+      .trim();
+}
+
+_SessionValidationResult _validateActiveSession(
+  LocalServerState state,
+  HttpRequest request,
+  Map<String, dynamic> body,
+) {
+  final username = _requestAuthUsername(request, body);
+  final deviceId = _requestAuthDeviceId(request, body);
+  final sessionToken = _requestAuthSessionToken(request, body);
+  if (username.isEmpty || deviceId.isEmpty || sessionToken.isEmpty) {
+    return const _SessionValidationResult(
+      ok: false,
+      statusCode: HttpStatus.unauthorized,
+      code: 'session_required',
+      message: 'Perangkat harus login ulang untuk melanjutkan operasi.',
+    );
+  }
+  final active = state.activeAuthSessions[username];
+  if (active == null || active.isEmpty) {
+    return const _SessionValidationResult(
+      ok: false,
+      statusCode: HttpStatus.unauthorized,
+      code: 'session_required',
+      message: 'Sesi login tidak ditemukan. Silakan login ulang.',
+    );
+  }
+  final activeDeviceId = (active['deviceId'] as String? ?? '').trim();
+  final activeToken = (active['sessionToken'] as String? ?? '').trim();
+  if (activeDeviceId != deviceId || activeToken != sessionToken) {
+    return const _SessionValidationResult(
+      ok: false,
+      statusCode: HttpStatus.unauthorized,
+      code: 'session_taken_over',
+      message:
+          'Akun ini sudah login di perangkat lain. Device lama harus login ulang.',
+    );
+  }
+  return _SessionValidationResult(
+    ok: true,
+    username: username,
+    deviceId: deviceId,
+    sessionToken: sessionToken,
+  );
+}
+
+LocalServerState _touchActiveSession(
+  LocalServerState state,
+  _SessionValidationResult validation,
+) {
+  if (!validation.ok || validation.username.isEmpty) {
+    return state;
+  }
+  final current = state.activeAuthSessions[validation.username];
+  if (current == null || current.isEmpty) {
+    return state;
+  }
+  final updated = {
+    ...state.activeAuthSessions,
+    validation.username: {
+      ...current,
+      'lastSeenIso': DateTime.now().toUtc().toIso8601String(),
+    },
+  };
+  return state.copyWith(activeAuthSessions: updated);
+}
+
+Future<void> _rejectSessionRequest(
+  HttpResponse response,
+  _SessionValidationResult validation,
+) async {
+  response.statusCode = validation.statusCode;
+  await _writeJson(response, {
+    'error': validation.message,
+    'code': validation.code,
+  });
+}
+
 bool _isOfficerOnline(LocalServerState state, String officerId) {
   if (officerId.isEmpty) return false;
   final presence = state.presence[officerId];
@@ -1455,6 +1685,26 @@ Map<String, dynamic> _primaryActiveSession(
   if (sessions.isEmpty) return {};
   final firstKey = sessions.keys.first;
   return sessions[firstKey] ?? {};
+}
+
+class _SessionValidationResult {
+  const _SessionValidationResult({
+    required this.ok,
+    this.username = '',
+    this.deviceId = '',
+    this.sessionToken = '',
+    this.statusCode = HttpStatus.ok,
+    this.code = '',
+    this.message = '',
+  });
+
+  final bool ok;
+  final String username;
+  final String deviceId;
+  final String sessionToken;
+  final int statusCode;
+  final String code;
+  final String message;
 }
 
 class _ServerOptions {
@@ -1522,6 +1772,7 @@ class LocalServerState {
     required this.pttFeeds,
     required this.activePttSession,
     required this.activePttSessions,
+    required this.activeAuthSessions,
   });
 
   final Map<String, Map<String, dynamic>> users;
@@ -1535,6 +1786,7 @@ class LocalServerState {
   final Map<String, List<Map<String, dynamic>>> pttFeeds;
   final Map<String, dynamic> activePttSession;
   final Map<String, Map<String, dynamic>> activePttSessions;
+  final Map<String, Map<String, dynamic>> activeAuthSessions;
 
   factory LocalServerState.seed() {
     return LocalServerState(
@@ -1655,6 +1907,7 @@ class LocalServerState {
       pttFeeds: const {},
       activePttSession: const {},
       activePttSessions: const {},
+      activeAuthSessions: const {},
     );
   }
 
@@ -1716,6 +1969,10 @@ class LocalServerState {
         (key, value) =>
             MapEntry(key.toString(), Map<String, dynamic>.from(value as Map)),
       ),
+      activeAuthSessions: (json['activeAuthSessions'] as Map? ?? const {}).map(
+        (key, value) =>
+            MapEntry(key.toString(), Map<String, dynamic>.from(value as Map)),
+      ),
     );
   }
 
@@ -1731,6 +1988,7 @@ class LocalServerState {
     Map<String, List<Map<String, dynamic>>>? pttFeeds,
     Map<String, dynamic>? activePttSession,
     Map<String, Map<String, dynamic>>? activePttSessions,
+    Map<String, Map<String, dynamic>>? activeAuthSessions,
   }) {
     return LocalServerState(
       users: users ?? this.users,
@@ -1744,6 +2002,7 @@ class LocalServerState {
       pttFeeds: pttFeeds ?? this.pttFeeds,
       activePttSession: activePttSession ?? this.activePttSession,
       activePttSessions: activePttSessions ?? this.activePttSessions,
+      activeAuthSessions: activeAuthSessions ?? this.activeAuthSessions,
     );
   }
 
@@ -1760,6 +2019,7 @@ class LocalServerState {
       'pttFeeds': pttFeeds,
       'activePttSession': activePttSession,
       'activePttSessions': activePttSessions,
+      'activeAuthSessions': activeAuthSessions,
     };
   }
 }
