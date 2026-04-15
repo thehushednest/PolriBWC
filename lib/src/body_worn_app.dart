@@ -1375,6 +1375,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
 
   Future<void> _startRecordingMode() async {
     if (_session == null) return;
+    const prefersWebRtcLive = true;
 
     final results = await [
       Permission.camera,
@@ -1393,13 +1394,15 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       return;
     }
 
-    await _ensureCameraReady();
-    final controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized) {
-      _showMessage(
-        'Kamera belum siap: ${_cameraError ?? 'inisialisasi gagal'}',
-      );
-      return;
+    if (!prefersWebRtcLive) {
+      await _ensureCameraReady();
+      final controller = _cameraController;
+      if (controller == null || !controller.value.isInitialized) {
+        _showMessage(
+          'Kamera belum siap: ${_cameraError ?? 'inisialisasi gagal'}',
+        );
+        return;
+      }
     }
     if (_isRecording) {
       return;
@@ -1415,7 +1418,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       deviceId: 'android_${session.nrp}',
       channelId: _selectedPttChannelId,
       tagLabel: _selectedTag,
-      preferredTransport: 'webrtc',
+      preferredTransport: prefersWebRtcLive ? 'webrtc' : 'snapshot',
       fallbackTransport: 'snapshot',
       signalingUrl: _config.liveSignalingWebSocketUrl,
       latitude: location?.latitude,
@@ -1430,6 +1433,21 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     if (liveSession == null) {
       _showMessage('Gagal membuka sesi live ke server.');
       return;
+    }
+
+    if (liveSession.transport != 'webrtc') {
+      await _ensureCameraReady();
+      final controller = _cameraController;
+      if (controller == null || !controller.value.isInitialized) {
+        await _backend.stopLiveStream(
+          sessionId: liveSession.sessionId,
+          officerId: session.nrp,
+        );
+        _showMessage(
+          'Kamera fallback belum siap: ${_cameraError ?? 'inisialisasi gagal'}',
+        );
+        return;
+      }
     }
 
     _ticker?.cancel();
