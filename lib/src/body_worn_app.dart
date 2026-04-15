@@ -1406,6 +1406,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     }
     final session = _session!;
     final location = await _resolveLocation();
+    debugPrint(
+      '[live-start-request] officer=${session.nrp} channel=$_selectedPttChannelId tag=$_selectedTag ws=${_config.liveSignalingWebSocketUrl} loc=${location?.latitude.toStringAsFixed(4) ?? '-'},${location?.longitude.toStringAsFixed(4) ?? '-'}',
+    );
     final liveSession = await _backend.startLiveStream(
       officerId: session.nrp,
       officerName: session.fullName,
@@ -1420,6 +1423,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       locationLabel: location == null
           ? 'Lokasi belum tersedia'
           : 'Lat ${location.latitude.toStringAsFixed(4)}, Lng ${location.longitude.toStringAsFixed(4)}',
+    );
+    debugPrint(
+      '[live-start-response] officer=${session.nrp} ok=${liveSession != null} session=${liveSession?.sessionId ?? '-'} transport=${liveSession?.transport ?? '-'} signaling=${liveSession?.signalingUrl ?? '-'}',
     );
     if (liveSession == null) {
       _showMessage('Gagal membuka sesi live ke server.');
@@ -1450,6 +1456,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       }
     }
     final connected = await _connectLiveSignaling(liveSession);
+    debugPrint(
+      '[live-signaling-connect] officer=${session.nrp} session=${liveSession.sessionId} connected=$connected transport=${liveSession.transport}',
+    );
     if (!connected) {
       await _backend.stopLiveStream(
         sessionId: liveSession.sessionId,

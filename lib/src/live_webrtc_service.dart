@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 typedef LiveStateCallback = void Function(Map<String, dynamic> event);
@@ -73,6 +74,7 @@ class LiveWebRtcService {
     if (_localStream != null && _localRenderer != null) {
       return;
     }
+    debugPrint('[live-webrtc] ensureLocalMedia start');
 
     final renderer = _localRenderer ?? RTCVideoRenderer();
     if (_localRenderer == null) {
@@ -95,6 +97,9 @@ class LiveWebRtcService {
     });
     final audioTracks = stream.getAudioTracks();
     final videoTracks = stream.getVideoTracks();
+    debugPrint(
+      '[live-webrtc] getUserMedia ok audio=${audioTracks.length} video=${videoTracks.length}',
+    );
     if (audioTracks.isEmpty || videoTracks.isEmpty) {
       throw StateError('Track kamera atau mikrofon tidak tersedia.');
     }
@@ -140,6 +145,9 @@ class LiveWebRtcService {
     if (_socketUrl.isEmpty || _isConnecting) return;
     if (_signalingSocket != null) return;
     _isConnecting = true;
+    debugPrint(
+      '[live-webrtc] connect signaling url=$_socketUrl session=$_sessionId user=$_username device=$_deviceId',
+    );
     _emitState('connecting', detail: 'Menghubungkan signaling Live Cam...');
     try {
       final socket = await WebSocket.connect(_socketUrl);
@@ -148,6 +156,7 @@ class LiveWebRtcService {
       _reconnectTimer?.cancel();
       _reconnectTimer = null;
       _emitState('connected', detail: 'Signaling Live Cam tersambung.');
+      debugPrint('[live-webrtc] signaling connected session=$_sessionId');
       _send({
         'type': 'hello',
         'sessionId': _sessionId,
@@ -163,6 +172,7 @@ class LiveWebRtcService {
       );
     } catch (error) {
       _isConnecting = false;
+      debugPrint('[live-webrtc] signaling connect failed error=$error');
       _emitState('reconnecting', detail: 'Gagal menghubungkan Live Cam.');
       onError('Signaling Live Cam gagal: $error');
       _scheduleReconnect();
@@ -170,6 +180,9 @@ class LiveWebRtcService {
   }
 
   void _handleSignalingClosed() {
+    debugPrint(
+      '[live-webrtc] signaling closed session=$_sessionId manual=$_isManualDisconnect',
+    );
     _signalingSocket = null;
     _isConnecting = false;
     unawaited(_closeAllPeers());
@@ -194,6 +207,7 @@ class LiveWebRtcService {
 
   void _handleSignalingMessage(dynamic raw) {
     if (raw is! String) return;
+    debugPrint('[live-webrtc] signaling message=$raw');
     try {
       final message = Map<String, dynamic>.from(jsonDecode(raw) as Map);
       switch (message['type'] as String? ?? '') {
@@ -265,6 +279,9 @@ class LiveWebRtcService {
   }) async {
     final clientId = peer['clientId'] as String? ?? '';
     final role = peer['role'] as String? ?? 'viewer';
+    debugPrint(
+      '[live-webrtc] ensurePeer client=$clientId role=$role createOffer=$createOffer self=$_selfClientId',
+    );
     if (clientId.isEmpty ||
         clientId == _selfClientId ||
         role == 'broadcaster' ||
@@ -321,6 +338,7 @@ class LiveWebRtcService {
     String clientId,
     RTCPeerConnection pc,
   ) async {
+    debugPrint('[live-webrtc] createOffer target=$clientId');
     final offer = await pc.createOffer({
       'offerToReceiveAudio': false,
       'offerToReceiveVideo': false,
@@ -420,6 +438,7 @@ class LiveWebRtcService {
   void _send(Map<String, dynamic> payload) {
     final socket = _signalingSocket;
     if (socket == null) return;
+    debugPrint('[live-webrtc] send ${jsonEncode(payload)}');
     try {
       socket.add(jsonEncode(payload));
     } catch (_) {

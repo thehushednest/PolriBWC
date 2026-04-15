@@ -376,6 +376,7 @@ Future<void> _handleRequest(
 
     if (method == 'POST' && path == '/api/v1/live/sessions') {
       final body = await _readJson(request);
+      stdout.writeln('[${_clockNow()}][live-start-request] ${jsonEncode(body)}');
       final officerId = body['officerId'] as String? ?? '';
       if (officerId.isEmpty) {
         response.statusCode = HttpStatus.badRequest;
