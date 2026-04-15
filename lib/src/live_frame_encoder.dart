@@ -7,13 +7,14 @@ import 'package:image/image.dart' as img;
 Uint8List? encodeLiveCameraImage(
   CameraImage cameraImage, {
   int jpegQuality = 55,
+  int? maxWidth,
 }) {
   try {
     switch (cameraImage.format.group) {
       case ImageFormatGroup.yuv420:
-        return _encodeYuv420(cameraImage, jpegQuality);
+        return _encodeYuv420(cameraImage, jpegQuality, maxWidth);
       case ImageFormatGroup.bgra8888:
-        return _encodeBgra8888(cameraImage, jpegQuality);
+        return _encodeBgra8888(cameraImage, jpegQuality, maxWidth);
       case ImageFormatGroup.jpeg:
         if (cameraImage.planes.isEmpty) return null;
         return cameraImage.planes.first.bytes;
@@ -25,7 +26,11 @@ Uint8List? encodeLiveCameraImage(
   }
 }
 
-Uint8List _encodeYuv420(CameraImage cameraImage, int jpegQuality) {
+Uint8List _encodeYuv420(
+  CameraImage cameraImage,
+  int jpegQuality,
+  int? maxWidth,
+) {
   final width = cameraImage.width;
   final height = cameraImage.height;
   final yPlane = cameraImage.planes[0];
@@ -56,11 +61,15 @@ Uint8List _encodeYuv420(CameraImage cameraImage, int jpegQuality) {
     }
   }
 
-  final rotated = img.copyRotate(image, angle: 90);
+  final rotated = _resizeIfNeeded(img.copyRotate(image, angle: 90), maxWidth);
   return Uint8List.fromList(img.encodeJpg(rotated, quality: jpegQuality));
 }
 
-Uint8List _encodeBgra8888(CameraImage cameraImage, int jpegQuality) {
+Uint8List _encodeBgra8888(
+  CameraImage cameraImage,
+  int jpegQuality,
+  int? maxWidth,
+) {
   final plane = cameraImage.planes.first;
   final buffer = plane.bytes.buffer;
   final image = img.Image.fromBytes(
@@ -69,8 +78,22 @@ Uint8List _encodeBgra8888(CameraImage cameraImage, int jpegQuality) {
     bytes: buffer,
     order: img.ChannelOrder.bgra,
   );
-  final rotated = img.copyRotate(image, angle: 90);
+  final rotated = _resizeIfNeeded(img.copyRotate(image, angle: 90), maxWidth);
   return Uint8List.fromList(img.encodeJpg(rotated, quality: jpegQuality));
 }
 
 int _clampColor(int value) => math.max(0, math.min(255, value));
+
+img.Image _resizeIfNeeded(img.Image image, int? maxWidth) {
+  if (maxWidth == null || maxWidth <= 0 || image.width <= maxWidth) {
+    return image;
+  }
+  final ratio = maxWidth / image.width;
+  final targetHeight = (image.height * ratio).round();
+  return img.copyResize(
+    image,
+    width: maxWidth,
+    height: targetHeight,
+    interpolation: img.Interpolation.linear,
+  );
+}

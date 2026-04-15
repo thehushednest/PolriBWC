@@ -16,17 +16,6 @@ String _dataPath([String filename = '']) {
   return filename.isEmpty ? base : '$base/$filename';
 }
 
-String _resolvePublicWebSocketUrl(HttpRequest request, String path) {
-  final forwardedProto = request.headers.value('x-forwarded-proto');
-  final scheme = forwardedProto == 'https' ? 'wss' : 'ws';
-  final host = request.headers.host ?? request.requestedUri.host;
-  final prefix = request.headers.value('x-forwarded-prefix') ?? '';
-  final normalizedPrefix = prefix.endsWith('/')
-      ? prefix.substring(0, prefix.length - 1)
-      : prefix;
-  return '$scheme://$host$normalizedPrefix$path';
-}
-
 const _dashboardSessionCookieName = 'polri_bwc_dashboard_session';
 const _dashboardOtpCookieName = 'polri_bwc_dashboard_otp';
 const _dashboardAdminUsername = 'admin';
@@ -56,7 +45,6 @@ Future<void> main(List<String> args) async {
     canRelayAudio: canRelayAudio,
   );
   final pttSignalingRelay = PttWebRtcSignalingRelay();
-  final liveSignalingRelay = LiveWebRtcSignalingRelay();
   final liveWebSocketRelay = LiveMonitorWebSocketRelay(
     initialSessions: _resolvedLiveSessions(store),
   );
@@ -80,7 +68,6 @@ Future<void> main(List<String> args) async {
         store,
         audioWebSocketRelay,
         pttSignalingRelay,
-        liveSignalingRelay,
         liveWebSocketRelay,
         dashboardAuth,
       ),
@@ -93,7 +80,6 @@ Future<void> _handleRequest(
   LocalServerStore store,
   PttAudioWebSocketRelay audioWebSocketRelay,
   PttWebRtcSignalingRelay pttSignalingRelay,
-  LiveWebRtcSignalingRelay liveSignalingRelay,
   LiveMonitorWebSocketRelay liveWebSocketRelay,
   DashboardAuthManager dashboardAuth,
 ) async {
@@ -119,12 +105,6 @@ Future<void> _handleRequest(
     if (path == '/api/v1/live/ws' &&
         WebSocketTransformer.isUpgradeRequest(request)) {
       await liveWebSocketRelay.handleUpgrade(request);
-      return;
-    }
-
-    if (path == '/api/v1/live/signal/ws' &&
-        WebSocketTransformer.isUpgradeRequest(request)) {
-      await liveSignalingRelay.handleUpgrade(request);
       return;
     }
 
@@ -382,16 +362,7 @@ Future<void> _handleRequest(
         response.statusCode = HttpStatus.badRequest;
         return _writeJson(response, {'error': 'officerId required'});
       }
-      final preferredTransport =
-          body['preferredTransport'] as String? ?? 'snapshot';
-      final fallbackTransport =
-          body['fallbackTransport'] as String? ?? 'snapshot';
-      final transport = preferredTransport == 'webrtc'
-          ? 'webrtc'
-          : fallbackTransport;
-      final signalingUrl =
-          body['signalingUrl'] as String? ??
-          _resolvePublicWebSocketUrl(request, '/api/v1/live/signal/ws');
+      const transport = 'snapshot';
       final sessionId =
           'LIVE_${DateTime.now().toUtc().toIso8601String().replaceAll(RegExp(r'[-:.TZ]'), '')}';
       final liveSession = <String, dynamic>{
@@ -411,9 +382,9 @@ Future<void> _handleRequest(
         'frameDataUrl': '',
         'frameCount': 0,
         'transport': transport,
-        'signalingUrl': signalingUrl,
+        'signalingUrl': '',
         'viewerUrl': '${dashboardBasePath.isEmpty ? '' : dashboardBasePath}/dashboard',
-        'signalingState': transport == 'webrtc' ? 'ready' : 'snapshot',
+        'signalingState': 'snapshot',
       };
       final updatedLive =
           Map<String, Map<String, dynamic>>.from(store.state.liveSessions)

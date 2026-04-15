@@ -44,7 +44,6 @@ dependencies:
   video_player: ^2.10.0
   flutter_map: ^7.0.2
   latlong2: ^0.9.1
-  flutter_webrtc: ^0.14.2
   proximity_sensor: ^1.0.0
   battery_plus: ^7.0.0
   flutter_sound: ^9.30.0
