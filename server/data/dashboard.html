@@ -346,6 +346,58 @@ html,body{height:100%;overflow:hidden;
   border:1px solid #d7e5f3}
 .fc-viewer-card .fc-detail-label{font-size:9px}
 .fc-viewer-card .fc-detail-value{font-size:11px}
+.live-viewer-shell{
+  width:min(1120px,96vw);
+  max-height:min(92vh,960px);
+  overflow:auto;
+  background:linear-gradient(180deg,#ffffff,#f6faff);
+  border:1px solid #d7e5f3;
+  border-radius:24px;
+  padding:18px;
+  box-shadow:0 28px 70px rgba(82,110,145,.22)}
+.live-viewer-stage{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  min-height:min(56vh,520px);
+  max-height:min(56vh,520px);
+  border-radius:20px;
+  overflow:hidden;
+  position:relative;
+  border:1px solid #d7e5f3;
+  background:
+    radial-gradient(circle at top, rgba(116,160,216,.14), transparent 34%),
+    linear-gradient(180deg,#eef5ff,#e7eef9)}
+.live-viewer-image{
+  display:block;
+  width:auto;
+  max-width:100%;
+  height:auto;
+  max-height:min(56vh,520px);
+  object-fit:contain;
+  margin:auto;
+  background:transparent}
+.live-viewer-video{
+  display:none;
+  width:100%;
+  height:100%;
+  object-fit:contain;
+  background:#05080f}
+.live-viewer-placeholder{
+  position:absolute;
+  inset:0;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:10px;
+  padding:24px;
+  text-align:center;
+  color:#5b7294;
+  background:radial-gradient(circle at top, rgba(255,255,255,.65), rgba(218,229,245,.92))}
+.live-viewer-placeholder.hidden{display:none}
+.live-viewer-placeholder strong{font-size:16px;color:#274b7a}
+.live-viewer-placeholder span{max-width:340px;font-size:12px;line-height:1.55}
 .fc-status{
   display:inline-block;margin-top:8px;font-size:10px;font-weight:800;
   padding:4px 10px;border-radius:999px}
@@ -600,6 +652,7 @@ const API_BASE = (() => {
 const DASHBOARD_LOGOUT_URL = API_BASE + '/dashboard/logout';
 const API = API_BASE + '/api/v1';
 const LIVE_WS = API_BASE.replace(/^http/, 'ws') + '/api/v1/live/ws';
+const LIVE_SIGNAL_WS = API_BASE.replace(/^http/, 'ws') + '/api/v1/live/signal/ws';
 const REFRESH = 8000;
 const DEFAULT_LAT = -6.2088, DEFAULT_LNG = 106.8456;
 
@@ -629,6 +682,9 @@ let serverOk    = false;
 let liveViewerSessionId = '';
 let liveSocket = null;
 let liveRenderQueued = false;
+let liveViewerSignalSocket = null;
+let liveViewerPeer = null;
+let liveViewerBroadcasterId = '';
 
 const logoutLink = document.getElementById('logout-link');
 if (logoutLink) logoutLink.href = DASHBOARD_LOGOUT_URL;
@@ -658,6 +714,9 @@ const fmtCoords = (lat, lng) => {
 };
 const liveTagLabel = session => session.tagLabel || 'Tag belum dikirim dari perangkat';
 const liveStatusLabel = session => {
+  if ((session.transport || '') === 'webrtc') {
+    return 'Live WebRTC aktif · audio + video realtime';
+  }
   const frames = session.frameCount || 0;
   return frames > 0 ? `Live aktif · ${frames} frame terkirim` : 'Live aktif · menunggu frame';
 };
@@ -1012,7 +1071,7 @@ function ensureLiveViewer() {
   if (document.getElementById('live-viewer')) return;
   document.body.insertAdjacentHTML('beforeend', `
     <div id="live-viewer" style="display:none;position:fixed;inset:0;background:rgba(3,6,12,.82);z-index:9999;align-items:center;justify-content:center;padding:24px">
-      <div style="width:min(980px,96vw);background:linear-gradient(180deg,#ffffff,#f6faff);border:1px solid #d7e5f3;border-radius:24px;padding:18px;box-shadow:0 28px 70px rgba(82,110,145,.22)">
+      <div class="live-viewer-shell">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
           <div>
             <div style="font-size:16px;font-weight:600;color:#17365d">Live Cam Monitor</div>
@@ -1021,12 +1080,187 @@ function ensureLiveViewer() {
           <button onclick="closeLiveViewer()" class="map-btn" style="width:36px;height:36px;background:#17365d;border-color:#17365d;color:#ffffff;font-size:22px;font-weight:700;line-height:1;box-shadow:0 8px 18px rgba(23,54,93,.22)">×</button>
         </div>
         <div id="live-viewer-chips" class="fc-chip-row" style="margin-top:0;margin-bottom:12px"></div>
-        <div style="border-radius:20px;overflow:hidden;border:1px solid #d7e5f3;background:#eef5ff">
-          <img id="live-viewer-image" src="" alt="live viewer" style="display:block;width:100%;height:min(72vh,720px);object-fit:contain;background:#eef5ff">
+        <div class="live-viewer-stage">
+          <video id="live-viewer-video" class="live-viewer-video" autoplay playsinline controls></video>
+          <img id="live-viewer-image" class="live-viewer-image" src="" alt="live viewer">
+          <div id="live-viewer-placeholder" class="live-viewer-placeholder">
+            <strong>Menunggu frame live pertama</strong>
+            <span>Perangkat sudah membuka sesi live, tetapi frame kamera belum diterima dashboard.</span>
+          </div>
         </div>
         <div id="live-viewer-details" class="fc-viewer-grid"></div>
       </div>
     </div>`);
+}
+
+function setLiveViewerFrame(frameDataUrl) {
+  const img = document.getElementById('live-viewer-image');
+  const video = document.getElementById('live-viewer-video');
+  const placeholder = document.getElementById('live-viewer-placeholder');
+  if (!img || !video || !placeholder) return;
+  video.pause();
+  video.style.display = 'none';
+  if (video.srcObject) {
+    const stream = video.srcObject;
+    if (stream && typeof stream.getTracks === 'function') {
+      stream.getTracks().forEach(track => track.stop());
+    }
+    video.srcObject = null;
+  }
+  if (frameDataUrl) {
+    img.src = frameDataUrl;
+    img.style.display = 'block';
+    placeholder.classList.add('hidden');
+    return;
+  }
+  img.removeAttribute('src');
+  img.style.display = 'none';
+  placeholder.classList.remove('hidden');
+}
+
+function setLiveViewerVideo(stream) {
+  const img = document.getElementById('live-viewer-image');
+  const video = document.getElementById('live-viewer-video');
+  const placeholder = document.getElementById('live-viewer-placeholder');
+  if (!img || !video || !placeholder) return;
+  img.removeAttribute('src');
+  img.style.display = 'none';
+  video.srcObject = stream;
+  video.style.display = 'block';
+  placeholder.classList.add('hidden');
+  video.play().catch(() => {});
+}
+
+function setLiveViewerPlaceholder(title, message) {
+  const placeholder = document.getElementById('live-viewer-placeholder');
+  if (!placeholder) return;
+  placeholder.innerHTML = `<strong>${title}</strong><span>${message}</span>`;
+  placeholder.classList.remove('hidden');
+}
+
+function resetLiveViewerMedia() {
+  if (liveViewerPeer) {
+    try { liveViewerPeer.close(); } catch(_) {}
+  }
+  liveViewerPeer = null;
+  liveViewerBroadcasterId = '';
+  if (liveViewerSignalSocket) {
+    try { liveViewerSignalSocket.close(); } catch(_) {}
+  }
+  liveViewerSignalSocket = null;
+  setLiveViewerFrame('');
+}
+
+async function ensureLiveViewerPeer(targetClientId) {
+  if (liveViewerPeer && liveViewerBroadcasterId === targetClientId) {
+    return liveViewerPeer;
+  }
+  if (liveViewerPeer) {
+    try { liveViewerPeer.close(); } catch(_) {}
+    liveViewerPeer = null;
+  }
+  liveViewerBroadcasterId = targetClientId;
+  const pc = new RTCPeerConnection({
+    iceServers: [{
+      urls: [
+        'stun:stun.l.google.com:19302',
+        'stun:stun1.l.google.com:19302',
+      ],
+    }],
+    sdpSemantics: 'unified-plan',
+  });
+  pc.onicecandidate = event => {
+    if (!event.candidate || !liveViewerSignalSocket || liveViewerSignalSocket.readyState !== WebSocket.OPEN) return;
+    liveViewerSignalSocket.send(JSON.stringify({
+      type: 'signal',
+      targetClientId,
+      data: { kind: 'candidate', candidate: event.candidate.toJSON ? event.candidate.toJSON() : event.candidate },
+    }));
+  };
+  pc.ontrack = event => {
+    const stream = event.streams && event.streams[0]
+      ? event.streams[0]
+      : new MediaStream([event.track]);
+    setLiveViewerVideo(stream);
+  };
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
+      setLiveViewerPlaceholder('Viewer Live terputus', 'Sambungan video+audio ke perangkat terputus. Tutup lalu buka kembali viewer.');
+    }
+  };
+  liveViewerPeer = pc;
+  return pc;
+}
+
+async function connectLiveViewer(session) {
+  if ((session.transport || '') !== 'webrtc') return;
+  resetLiveViewerMedia();
+  setLiveViewerPlaceholder(
+    'Menghubungkan viewer WebRTC',
+    'Dashboard sedang membuat sambungan video+audio ke perangkat body worn.',
+  );
+  const socketUrl = session.signalingUrl || LIVE_SIGNAL_WS;
+  const socket = new WebSocket(socketUrl);
+  liveViewerSignalSocket = socket;
+  socket.addEventListener('open', () => {
+    socket.send(JSON.stringify({
+      type: 'hello',
+      sessionId: session.sessionId,
+      username: 'dashboard-viewer',
+      deviceId: `dashboard_${Date.now()}`,
+      role: 'viewer',
+    }));
+  });
+  socket.addEventListener('message', async event => {
+    let payload;
+    try {
+      payload = JSON.parse(event.data);
+    } catch (_) {
+      return;
+    }
+    if (socket !== liveViewerSignalSocket) return;
+    if (payload.type === 'signal') {
+      const data = payload.data || {};
+      const peer = await ensureLiveViewerPeer(payload.fromClientId);
+      if (data.kind === 'sdp') {
+        await peer.setRemoteDescription({ type: data.type || 'offer', sdp: data.sdp || '' });
+        if ((data.type || '') === 'offer') {
+          const answer = await peer.createAnswer();
+          await peer.setLocalDescription(answer);
+          socket.send(JSON.stringify({
+            type: 'signal',
+            targetClientId: payload.fromClientId,
+            data: { kind: 'sdp', type: answer.type, sdp: answer.sdp },
+          }));
+        }
+      } else if (data.kind === 'candidate' && data.candidate) {
+        await peer.addIceCandidate(data.candidate);
+      }
+      return;
+    }
+    if (payload.type === 'peer-left' && payload.clientId === liveViewerBroadcasterId) {
+      setLiveViewerPlaceholder(
+        'Perangkat keluar dari live',
+        'Body worn menghentikan streaming kamera+suara atau koneksi perangkat terputus.',
+      );
+      return;
+    }
+    if (payload.type === 'hello-ack' || payload.type === 'peer-joined') {
+      setLiveViewerPlaceholder(
+        'Menunggu offer dari perangkat',
+        'Viewer dashboard sudah standby. Perangkat akan mulai mengirim video+audio saat peer connection siap.',
+      );
+    }
+  });
+  socket.addEventListener('close', () => {
+    if (socket !== liveViewerSignalSocket) return;
+    liveViewerSignalSocket = null;
+    if (!document.getElementById('live-viewer') || document.getElementById('live-viewer').style.display === 'none') return;
+    setLiveViewerPlaceholder(
+      'Signaling Live terputus',
+      'Sambungan signaling viewer ke server terputus sebelum video+audio tersambung penuh.',
+    );
+  });
 }
 
 function renderLiveViewerDetails(current) {
@@ -1043,6 +1277,7 @@ function renderLiveViewerDetails(current) {
     renderViewerDetail('Nama Petugas / User', officerName),
     renderViewerDetail('Lokasi', current.locationLabel || 'Lokasi tidak tersedia'),
     renderViewerDetail('Koordinat', fmtCoords(current.latitude, current.longitude)),
+    renderViewerDetail('Transport', (current.transport || 'snapshot').toUpperCase()),
     renderViewerDetail('Status Stream', liveStatusLabel(current)),
     renderViewerDetail('Mulai Live', fmtDate(current.startedAtIso)),
     renderViewerDetail('Update Terakhir', fmtDate(current.lastFrameAtIso || current.startedAtIso)),
@@ -1054,18 +1289,21 @@ function openLiveViewer(sessionId) {
   liveViewerSessionId = sessionId;
   const current = allLive.find(item => item.sessionId === sessionId);
   const root = document.getElementById('live-viewer');
-  const img = document.getElementById('live-viewer-image');
   const meta = document.getElementById('live-viewer-meta');
-  if (current && img && meta) {
-    img.src = current.frameDataUrl || '';
+  if (current && meta) {
+    setLiveViewerFrame(current.frameDataUrl || '');
     meta.textContent = `${current.officerName || current.officerId} · ${(current.channelId||'-').toUpperCase()} · ${current.locationLabel || '-'}`;
     renderLiveViewerDetails(current);
+    if ((current.transport || '') === 'webrtc') {
+      connectLiveViewer(current);
+    }
   }
   if (root) root.style.display = 'flex';
 }
 
 function closeLiveViewer() {
   liveViewerSessionId = '';
+  resetLiveViewerMedia();
   const root = document.getElementById('live-viewer');
   if (root) root.style.display = 'none';
 }
@@ -1098,6 +1336,8 @@ function renderLiveCards() {
     const tagLabel = liveTagLabel(x);
     const preview = x.frameDataUrl
       ? `<img src="${x.frameDataUrl}" alt="live ${officerName}" style="width:100%;height:120px;object-fit:cover;border-radius:10px;border:1px solid var(--border);margin-top:8px;background:#05080f">`
+      : (x.transport || '') === 'webrtc'
+      ? `<div style="width:100%;height:120px;border-radius:10px;border:1px solid var(--border);margin-top:8px;background:#05080f;display:flex;align-items:center;justify-content:center;color:var(--muted)">Viewer WebRTC siap untuk video + suara</div>`
       : `<div style="width:100%;height:120px;border-radius:10px;border:1px solid var(--border);margin-top:8px;background:#05080f;display:flex;align-items:center;justify-content:center;color:var(--muted)">Menunggu frame live...</div>`;
     return `<div class="feed-card" data-live-session="${x.sessionId}" style="border-color:rgba(18,194,106,.35)">
       <div class="fc-header">
@@ -1191,10 +1431,11 @@ function renderRecordingsCards() {
 function renderLiveSurface() {
   if (liveViewerSessionId) {
     const current = allLive.find(item => item.sessionId === liveViewerSessionId);
-    const img = document.getElementById('live-viewer-image');
     const meta = document.getElementById('live-viewer-meta');
-    if (current && img && meta) {
-      if (current.frameDataUrl) img.src = current.frameDataUrl;
+    if (current && meta) {
+      if ((current.transport || '') !== 'webrtc') {
+        setLiveViewerFrame(current.frameDataUrl || '');
+      }
       meta.textContent = `${current.officerName || current.officerId} · ${(current.channelId||'-').toUpperCase()} · ${current.locationLabel || '-'}`;
       renderLiveViewerDetails(current);
     }

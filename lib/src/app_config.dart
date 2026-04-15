@@ -101,7 +101,7 @@ class AppConfig {
         ? uri.path.substring(0, uri.path.length - 1)
         : uri.path;
     final wsPath =
-        '${trimmedPath.isEmpty ? '' : trimmedPath}/api/$apiVersion/live/ws';
+        '${trimmedPath.isEmpty ? '' : trimmedPath}/api/$apiVersion/live/signal/ws';
     return Uri(
       scheme: scheme,
       host: uri.host,

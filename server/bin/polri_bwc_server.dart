@@ -16,6 +16,27 @@ String _dataPath([String filename = '']) {
   return filename.isEmpty ? base : '$base/$filename';
 }
 
+String _resolvePublicWebSocketUrl(HttpRequest request, String path) {
+  final forwardedProto = request.headers.value('x-forwarded-proto');
+  final scheme = forwardedProto == 'https' ? 'wss' : 'ws';
+  final host = request.headers.host ?? request.requestedUri.host;
+  final prefix = request.headers.value('x-forwarded-prefix') ?? '';
+  final normalizedPrefix = prefix.endsWith('/')
+      ? prefix.substring(0, prefix.length - 1)
+      : prefix;
+  return '$scheme://$host$normalizedPrefix$path';
+}
+
+const _dashboardSessionCookieName = 'polri_bwc_dashboard_session';
+const _dashboardOtpCookieName = 'polri_bwc_dashboard_otp';
+const _dashboardAdminUsername = 'admin';
+const _dashboardAdminPassword = 'admin';
+const _dashboardAdminPhoneDisplay = '08131850060';
+const _dashboardAdminPhoneWhatsApp = '628131850060';
+const _dashboardOtpHttpBaseUrl = 'http://127.0.0.1:8030';
+const _dashboardOtpHttpBearerToken =
+    'f7a10e21ab3b9af1024aae4930007d721e9d18e4771c2f3b90ba581f62dca0aa';
+
 Future<void> main(List<String> args) async {
   final options = _ServerOptions.fromArgs(args);
   final store = await LocalServerStore.load();
@@ -35,6 +56,7 @@ Future<void> main(List<String> args) async {
     canRelayAudio: canRelayAudio,
   );
   final pttSignalingRelay = PttWebRtcSignalingRelay();
+  final liveSignalingRelay = LiveWebRtcSignalingRelay();
   final liveWebSocketRelay = LiveMonitorWebSocketRelay(
     initialSessions: _resolvedLiveSessions(store),
   );
@@ -58,6 +80,7 @@ Future<void> main(List<String> args) async {
         store,
         audioWebSocketRelay,
         pttSignalingRelay,
+        liveSignalingRelay,
         liveWebSocketRelay,
         dashboardAuth,
       ),
@@ -70,6 +93,7 @@ Future<void> _handleRequest(
   LocalServerStore store,
   PttAudioWebSocketRelay audioWebSocketRelay,
   PttWebRtcSignalingRelay pttSignalingRelay,
+  LiveWebRtcSignalingRelay liveSignalingRelay,
   LiveMonitorWebSocketRelay liveWebSocketRelay,
   DashboardAuthManager dashboardAuth,
 ) async {
@@ -98,6 +122,12 @@ Future<void> _handleRequest(
       return;
     }
 
+    if (path == '/api/v1/live/signal/ws' &&
+        WebSocketTransformer.isUpgradeRequest(request)) {
+      await liveSignalingRelay.handleUpgrade(request);
+      return;
+    }
+
     _applyCors(response);
 
     if (request.method == 'OPTIONS') {
@@ -107,11 +137,16 @@ Future<void> _handleRequest(
     }
 
     if (method == 'GET' && path == '/dashboard/login') {
+      final otpToken = _readCookie(request, _dashboardOtpCookieName);
+      final otpChallenge = dashboardAuth._lookupOtpChallenge(otpToken);
       response.headers.contentType = ContentType.html;
       response.write(
         _buildDashboardLoginPage(
           dashboardBasePath: dashboardBasePath,
           invalidCredentials: request.uri.queryParameters['error'] == 'invalid',
+          otpRequested: otpChallenge != null,
+          invalidOtp: request.uri.queryParameters['error'] == 'otp',
+          otpDeliveryFailed: request.uri.queryParameters['error'] == 'delivery',
         ),
       );
       await response.close();
@@ -120,12 +155,66 @@ Future<void> _handleRequest(
 
     if (method == 'POST' && path == '/dashboard/login') {
       final form = await _readForm(request);
+      final otpCode = (form['otp'] ?? '').trim();
+      final otpToken = _readCookie(request, _dashboardOtpCookieName);
+
+      if (otpCode.isNotEmpty && otpToken.isNotEmpty) {
+        final verified = dashboardAuth.verifyOtp(otpToken, otpCode);
+        if (verified) {
+          final token = dashboardAuth.issueToken();
+          response.cookies.add(
+            Cookie(_dashboardSessionCookieName, token)
+              ..httpOnly = true
+              ..sameSite = SameSite.lax
+              ..path = dashboardBasePath.isEmpty ? '/' : '$dashboardBasePath/',
+          );
+          response.cookies.add(
+            Cookie(_dashboardOtpCookieName, '')
+              ..expires = DateTime.fromMillisecondsSinceEpoch(0)
+              ..httpOnly = true
+              ..sameSite = SameSite.lax
+              ..path = dashboardBasePath.isEmpty ? '/' : '$dashboardBasePath/',
+          );
+          response.statusCode = HttpStatus.found;
+          response.headers.set(
+            'Location',
+            _withDashboardBase(dashboardBasePath, '/dashboard'),
+          );
+          await response.close();
+          return;
+        }
+        response.statusCode = HttpStatus.found;
+        response.headers.set(
+          'Location',
+          _withDashboardBase(dashboardBasePath, '/dashboard/login?error=otp'),
+        );
+        await response.close();
+        return;
+      }
+
       final username = (form['username'] ?? '').trim();
       final password = (form['password'] ?? '').trim();
-      if (username == 'admin' && password == 'admin') {
-        final token = dashboardAuth.issueToken();
+      if (username == _dashboardAdminUsername &&
+          password == _dashboardAdminPassword) {
+        final challenge = dashboardAuth._issueOtpChallenge(
+          phoneNumber: _dashboardAdminPhoneWhatsApp,
+        );
+        final sent = await _sendDashboardOtpViaWhatsApp(challenge.code);
+        if (!sent) {
+          dashboardAuth._revokeOtpChallenge(challenge.challengeToken);
+          response.statusCode = HttpStatus.found;
+          response.headers.set(
+            'Location',
+            _withDashboardBase(
+              dashboardBasePath,
+              '/dashboard/login?error=delivery',
+            ),
+          );
+          await response.close();
+          return;
+        }
         response.cookies.add(
-          Cookie(_dashboardSessionCookieName, token)
+          Cookie(_dashboardOtpCookieName, challenge.challengeToken)
             ..httpOnly = true
             ..sameSite = SameSite.lax
             ..path = dashboardBasePath.isEmpty ? '/' : '$dashboardBasePath/',
@@ -133,7 +222,7 @@ Future<void> _handleRequest(
         response.statusCode = HttpStatus.found;
         response.headers.set(
           'Location',
-          _withDashboardBase(dashboardBasePath, '/dashboard'),
+          _withDashboardBase(dashboardBasePath, '/dashboard/login'),
         );
         await response.close();
         return;
@@ -154,6 +243,13 @@ Future<void> _handleRequest(
       }
       response.cookies.add(
         Cookie(_dashboardSessionCookieName, '')
+          ..expires = DateTime.fromMillisecondsSinceEpoch(0)
+          ..httpOnly = true
+          ..sameSite = SameSite.lax
+          ..path = dashboardBasePath.isEmpty ? '/' : '$dashboardBasePath/',
+      );
+      response.cookies.add(
+        Cookie(_dashboardOtpCookieName, '')
           ..expires = DateTime.fromMillisecondsSinceEpoch(0)
           ..httpOnly = true
           ..sameSite = SameSite.lax
@@ -285,6 +381,16 @@ Future<void> _handleRequest(
         response.statusCode = HttpStatus.badRequest;
         return _writeJson(response, {'error': 'officerId required'});
       }
+      final preferredTransport =
+          body['preferredTransport'] as String? ?? 'snapshot';
+      final fallbackTransport =
+          body['fallbackTransport'] as String? ?? 'snapshot';
+      final transport = preferredTransport == 'webrtc'
+          ? 'webrtc'
+          : fallbackTransport;
+      final signalingUrl =
+          body['signalingUrl'] as String? ??
+          _resolvePublicWebSocketUrl(request, '/api/v1/live/signal/ws');
       final sessionId =
           'LIVE_${DateTime.now().toUtc().toIso8601String().replaceAll(RegExp(r'[-:.TZ]'), '')}';
       final liveSession = <String, dynamic>{
@@ -303,6 +409,10 @@ Future<void> _handleRequest(
         'lastFrameAtIso': '',
         'frameDataUrl': '',
         'frameCount': 0,
+        'transport': transport,
+        'signalingUrl': signalingUrl,
+        'viewerUrl': '${dashboardBasePath.isEmpty ? '' : dashboardBasePath}/dashboard',
+        'signalingState': transport == 'webrtc' ? 'ready' : 'snapshot',
       };
       final updatedLive =
           Map<String, Map<String, dynamic>>.from(store.state.liveSessions)
@@ -346,6 +456,9 @@ Future<void> _handleRequest(
         'tagLabel': body['tagLabel'] ?? current['tagLabel'],
       };
       store.state = store.state.copyWith(liveSessions: updatedLive);
+      stdout.writeln(
+        '[${_clockNow()}][live-frame] session=$sessionId officer=${current['officerId'] ?? '-'} frame=$frameCount bytes=${(body['frameDataUrl'] as String? ?? '').length}',
+      );
       liveWebSocketRelay.broadcastFrame(updatedLive[sessionId]!);
       return _writeJson(response, {
         'status': 'ok',
@@ -676,7 +789,35 @@ Future<void> _writeJson(HttpResponse response, Object payload) async {
   await response.close();
 }
 
-const _dashboardSessionCookieName = 'polri_bwc_dashboard_session';
+Future<bool> _sendDashboardOtpViaWhatsApp(String code) async {
+  final client = HttpClient();
+  client.connectionTimeout = const Duration(seconds: 4);
+  try {
+    final uri = Uri.parse('$_dashboardOtpHttpBaseUrl/send-admin-otp');
+    final request = await client.postUrl(uri).timeout(
+      const Duration(seconds: 4),
+    );
+    request.headers.contentType = ContentType.json;
+    request.headers.set(
+      HttpHeaders.authorizationHeader,
+      'Bearer $_dashboardOtpHttpBearerToken',
+    );
+    request.write(
+      jsonEncode({
+        'code': code,
+        'purpose': 'admin_login',
+      }),
+    );
+    final response = await request.close().timeout(const Duration(seconds: 6));
+    await response.drain<void>();
+    return response.statusCode >= 200 && response.statusCode < 300;
+  } catch (error) {
+    stdout.writeln('[${_clockNow()}][dashboard-otp] gagal kirim OTP: $error');
+    return false;
+  } finally {
+    client.close(force: true);
+  }
+}
 
 String _readCookie(HttpRequest request, String name) {
   for (final cookie in request.cookies) {
@@ -706,10 +847,25 @@ String _withDashboardBase(String basePath, String routePath) {
 String _buildDashboardLoginPage({
   required String dashboardBasePath,
   bool invalidCredentials = false,
+  bool otpRequested = false,
+  bool invalidOtp = false,
+  bool otpDeliveryFailed = false,
 }) {
   final errorBanner = invalidCredentials
       ? '''
         <div class="notice">Username atau password salah.</div>
+      '''
+      : invalidOtp
+      ? '''
+        <div class="notice">Kode OTP salah atau sudah kedaluwarsa.</div>
+      '''
+      : otpDeliveryFailed
+      ? '''
+        <div class="notice">OTP gagal dikirim ke WhatsApp admin. Pastikan service bot aktif dan session WhatsApp tidak bentrok.</div>
+      '''
+      : otpRequested
+      ? '''
+        <div class="notice success">OTP sudah dikirim ke WhatsApp admin ($_dashboardAdminPhoneDisplay). Masukkan kode untuk membuka dashboard.</div>
       '''
       : '';
   final loginAction = _withDashboardBase(dashboardBasePath, '/dashboard/login');
@@ -944,6 +1100,11 @@ String _buildDashboardLoginPage({
       font-size:14px;
       font-weight:700;
     }
+    .notice.success{
+      border-color:rgba(18,194,106,.18);
+      background:rgba(18,194,106,.10);
+      color:#18734a;
+    }
     @media (max-width: 860px){
       .frame{grid-template-columns:1fr}
       .panel{padding:24px 22px}
@@ -980,10 +1141,17 @@ String _buildDashboardLoginPage({
     <section class="card">
       <div class="card-shell">
         <div class="card-kicker">Secure Sign-In</div>
-        <div class="card-title">Login Dashboard</div>
-        <p class="card-copy">Masukkan kredensial administrator untuk melanjutkan ke dashboard Polri BWC.</p>
+        <div class="card-title">${otpRequested ? 'Verifikasi OTP' : 'Login Dashboard'}</div>
+        <p class="card-copy">${otpRequested ? 'Kredensial benar. Lanjutkan dengan OTP WhatsApp yang dikirim ke nomor admin tetap untuk membuka dashboard Polri BWC.' : 'Masukkan kredensial administrator untuk melanjutkan ke dashboard Polri BWC.'}</p>
         $errorBanner
         <form method="post" action="$loginAction">
+          ${otpRequested ? '''
+          <div class="field">
+            <label for="otp">Kode OTP WhatsApp</label>
+            <input id="otp" name="otp" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+          </div>
+          <button type="submit">Verifikasi & Masuk</button>
+          ''' : '''
           <div class="field">
             <label for="username">Username</label>
             <input id="username" name="username" type="text" autocomplete="username" required>
@@ -992,9 +1160,10 @@ String _buildDashboardLoginPage({
             <label for="password">Password</label>
             <input id="password" name="password" type="password" autocomplete="current-password" required>
           </div>
-          <button type="submit">Masuk ke Dashboard</button>
+          <button type="submit">Kirim OTP ke WhatsApp Admin</button>
+          '''}
         </form>
-        <div class="hint">Credentials sementara: <strong>admin</strong> / <strong>admin</strong></div>
+        <div class="hint">${otpRequested ? 'OTP dikirim ke nomor admin yang sudah ditentukan dari awal: <strong>$_dashboardAdminPhoneDisplay</strong>' : 'Credentials sementara: <strong>admin</strong> / <strong>admin</strong>. Setelah benar, sistem akan mengirim OTP ke WhatsApp admin <strong>$_dashboardAdminPhoneDisplay</strong>.'}</div>
       </div>
     </section>
   </div>
@@ -1005,12 +1174,12 @@ String _buildDashboardLoginPage({
 
 class DashboardAuthManager {
   final Map<String, DateTime> _activeTokens = {};
+  final Map<String, _DashboardOtpChallenge> _otpChallenges = {};
   final Random _random = Random.secure();
 
   String issueToken() {
     _pruneExpired();
-    final bytes = List<int>.generate(24, (_) => _random.nextInt(256));
-    final token = base64UrlEncode(bytes).replaceAll('=', '');
+    final token = _issueOpaqueToken();
     _activeTokens[token] = DateTime.now().toUtc().add(
       const Duration(hours: 12),
     );
@@ -1034,10 +1203,76 @@ class DashboardAuthManager {
     _activeTokens.remove(token);
   }
 
+  _DashboardOtpChallenge _issueOtpChallenge({required String phoneNumber}) {
+    _pruneExpired();
+    final challengeToken = _issueOpaqueToken(length: 18);
+    final code = List<int>.generate(6, (_) => _random.nextInt(10)).join();
+    final challenge = _DashboardOtpChallenge(
+      challengeToken: challengeToken,
+      phoneNumber: phoneNumber,
+      code: code,
+      expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
+      attemptsLeft: 5,
+    );
+    _otpChallenges[challengeToken] = challenge;
+    return challenge;
+  }
+
+  _DashboardOtpChallenge? _lookupOtpChallenge(String token) {
+    if (token.isEmpty) return null;
+    _pruneExpired();
+    return _otpChallenges[token];
+  }
+
+  bool verifyOtp(String challengeToken, String code) {
+    if (challengeToken.isEmpty || code.isEmpty) return false;
+    _pruneExpired();
+    final challenge = _otpChallenges[challengeToken];
+    if (challenge == null) return false;
+    if (challenge.code != code) {
+      challenge.attemptsLeft -= 1;
+      if (challenge.attemptsLeft <= 0) {
+        _otpChallenges.remove(challengeToken);
+      }
+      return false;
+    }
+    _otpChallenges.remove(challengeToken);
+    return true;
+  }
+
+  void _revokeOtpChallenge(String token) {
+    if (token.isEmpty) return;
+    _otpChallenges.remove(token);
+  }
+
   void _pruneExpired() {
     final now = DateTime.now().toUtc();
     _activeTokens.removeWhere((_, expiresAt) => expiresAt.isBefore(now));
+    _otpChallenges.removeWhere(
+      (_, challenge) => challenge.expiresAt.isBefore(now),
+    );
   }
+
+  String _issueOpaqueToken({int length = 24}) {
+    final bytes = List<int>.generate(length, (_) => _random.nextInt(256));
+    return base64UrlEncode(bytes).replaceAll('=', '');
+  }
+}
+
+class _DashboardOtpChallenge {
+  _DashboardOtpChallenge({
+    required this.challengeToken,
+    required this.phoneNumber,
+    required this.code,
+    required this.expiresAt,
+    required this.attemptsLeft,
+  });
+
+  final String challengeToken;
+  final String phoneNumber;
+  final String code;
+  final DateTime expiresAt;
+  int attemptsLeft;
 }
 
 String _clockNow() {
@@ -1886,6 +2121,175 @@ class LiveMonitorWebSocketRelay {
         _clients.remove(client);
       }
     }
+  }
+}
+
+class LiveWebRtcSignalingRelay {
+  final List<_LiveSignalingClient> _clients = [];
+
+  Future<void> handleUpgrade(HttpRequest request) async {
+    final socket = await WebSocketTransformer.upgrade(request);
+    final client = _LiveSignalingClient(
+      clientId:
+          'live_${DateTime.now().microsecondsSinceEpoch}_${Random().nextInt(999999)}',
+      socket: socket,
+      onDisconnect: _removeClient,
+      onJoin: _handleJoin,
+      onSignal: _relaySignal,
+    );
+    _clients.add(client);
+    client.start();
+  }
+
+  void _handleJoin(_LiveSignalingClient client, Map<String, dynamic> message) {
+    final previousSessionId = client.sessionId;
+    client.username = message['username'] as String? ?? client.username;
+    client.sessionId = message['sessionId'] as String? ?? client.sessionId;
+    client.deviceId = message['deviceId'] as String? ?? client.deviceId;
+    client.role = message['role'] as String? ?? client.role;
+
+    if (previousSessionId.isNotEmpty && previousSessionId != client.sessionId) {
+      for (final peer in _clients.toList()) {
+        if (identical(peer, client)) continue;
+        if (peer.sessionId != previousSessionId) continue;
+        peer.send({
+          'type': 'peer-left',
+          'clientId': client.clientId,
+          'username': client.username,
+          'sessionId': previousSessionId,
+          'role': client.role,
+        });
+      }
+    }
+
+    final peers = _clients
+        .where(
+          (peer) =>
+              !identical(peer, client) &&
+              peer.sessionId == client.sessionId &&
+              peer.username.isNotEmpty,
+        )
+        .map(
+          (peer) => {
+            'clientId': peer.clientId,
+            'username': peer.username,
+            'sessionId': peer.sessionId,
+            'deviceId': peer.deviceId,
+            'role': peer.role,
+          },
+        )
+        .toList();
+
+    client.send({
+      'type': 'hello-ack',
+      'clientId': client.clientId,
+      'sessionId': client.sessionId,
+      'role': client.role,
+      'peers': peers,
+    });
+
+    for (final peer in _clients.toList()) {
+      if (identical(peer, client)) continue;
+      if (peer.sessionId != client.sessionId) continue;
+      peer.send({
+        'type': 'peer-joined',
+        'peer': {
+          'clientId': client.clientId,
+          'username': client.username,
+          'sessionId': client.sessionId,
+          'deviceId': client.deviceId,
+          'role': client.role,
+        },
+      });
+    }
+  }
+
+  void _relaySignal(_LiveSignalingClient sender, Map<String, dynamic> message) {
+    final targetClientId = message['targetClientId'] as String? ?? '';
+    if (targetClientId.isEmpty) return;
+    _LiveSignalingClient? target;
+    for (final client in _clients) {
+      if (client.clientId == targetClientId) {
+        target = client;
+        break;
+      }
+    }
+    if (target == null) return;
+    target.send({
+      'type': 'signal',
+      'fromClientId': sender.clientId,
+      'fromUsername': sender.username,
+      'fromRole': sender.role,
+      'sessionId': sender.sessionId,
+      'data': message['data'],
+    });
+  }
+
+  void _removeClient(_LiveSignalingClient client) {
+    _clients.remove(client);
+    for (final peer in _clients.toList()) {
+      if (peer.sessionId != client.sessionId) continue;
+      peer.send({
+        'type': 'peer-left',
+        'clientId': client.clientId,
+        'username': client.username,
+        'sessionId': client.sessionId,
+        'role': client.role,
+      });
+    }
+  }
+}
+
+class _LiveSignalingClient {
+  _LiveSignalingClient({
+    required this.clientId,
+    required this.socket,
+    required this.onDisconnect,
+    required this.onJoin,
+    required this.onSignal,
+  });
+
+  final String clientId;
+  final WebSocket socket;
+  final void Function(_LiveSignalingClient client) onDisconnect;
+  final void Function(_LiveSignalingClient client, Map<String, dynamic> message)
+  onJoin;
+  final void Function(_LiveSignalingClient client, Map<String, dynamic> message)
+  onSignal;
+
+  String username = '';
+  String sessionId = '';
+  String deviceId = '';
+  String role = 'viewer';
+
+  void start() {
+    socket.listen(
+      (raw) {
+        if (raw is! String) return;
+        final message = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+        switch (message['type'] as String? ?? '') {
+          case 'hello':
+          case 'join':
+            onJoin(this, message);
+            break;
+          case 'signal':
+            onSignal(this, message);
+            break;
+          case 'ping':
+            send({'type': 'pong'});
+            break;
+        }
+      },
+      onDone: () => onDisconnect(this),
+      onError: (_) => onDisconnect(this),
+      cancelOnError: true,
+    );
+  }
+
+  void send(Map<String, dynamic> payload) {
+    try {
+      socket.add(jsonEncode(payload));
+    } catch (_) {}
   }
 }
 

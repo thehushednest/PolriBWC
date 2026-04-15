@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -14,6 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'api_client.dart';
 import 'app_config.dart';
 import 'backend_gateway.dart';
+import 'live_webrtc_service.dart';
 import 'live_frame_encoder.dart';
 import 'models.dart';
 import 'navigation.dart';
@@ -161,6 +163,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   late final AppConfig _config;
   late final BackendGateway _backend;
   late final PttWebRtcService _pttWebRtcService;
+  late final LiveWebRtcService _liveWebRtcService;
 
   static const _kDeviceChannel = MethodChannel('polri_bwc/device');
 
@@ -218,6 +221,10 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     _pttWebRtcService = PttWebRtcService(
       onState: _handlePttStateEvent,
       onError: _handlePttErrorEvent,
+    );
+    _liveWebRtcService = LiveWebRtcService(
+      onState: _handleLiveStateEvent,
+      onError: _handleLiveErrorEvent,
     );
     WidgetsBinding.instance.addObserver(this);
     _initialize();
@@ -321,6 +328,35 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     if (message.isNotEmpty) {
       _showMessage(message);
     }
+  }
+
+  void _handleLiveStateEvent(Map<String, dynamic> arguments) {
+    if (!mounted) return;
+    final state = arguments['state'] as String? ?? '';
+    final detail = arguments['detail'] as String? ?? '';
+    setState(() {
+      if (detail.isNotEmpty) {
+        _liveSignalingStatus = detail;
+      }
+      if (state == 'streaming') {
+        _liveTransportMode = 'webrtc';
+        _liveFrameStatus = 'Streaming kamera + mikrofon ke dashboard.';
+      } else if (state == 'preview-ready' && _liveFrameStatus.isEmpty) {
+        _liveFrameStatus = 'Preview Live Cam siap.';
+      }
+    });
+  }
+
+  void _handleLiveErrorEvent(String message) {
+    if (!mounted) return;
+    setState(() {
+      _liveSignalingStatus = message.isEmpty
+          ? 'Live Cam WebRTC bermasalah.'
+          : message;
+      if (_liveTransportMode == 'webrtc') {
+        _liveFrameStatus = 'Live Cam WebRTC gagal tersambung.';
+      }
+    });
   }
 
   bool get _canUseBlackout {
@@ -488,25 +524,50 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
             activeSession.signalingState != 'idle') {
           _liveSignalingStatus = 'Signaling ${activeSession.signalingState}';
         }
-        _liveFrameStatus = activeSession.frameCount == 0
-            ? 'Menunggu frame live...'
-            : 'Frame ${activeSession.frameCount} � ${_compactTimeFormat.format(DateTime.tryParse(activeSession.lastFrameAtIso)?.toLocal() ?? DateTime.now())}';
+        if (activeSession.transport == 'webrtc') {
+          _liveFrameStatus = 'Live kamera + mikrofon aktif via WebRTC.';
+        } else {
+          _liveFrameStatus = activeSession.frameCount == 0
+              ? 'Menunggu frame live...'
+              : 'Frame ${activeSession.frameCount} · ${_compactTimeFormat.format(DateTime.tryParse(activeSession.lastFrameAtIso)?.toLocal() ?? DateTime.now())}';
+        }
       }
     });
   }
 
-  Future<void> _connectLiveSignaling(LiveStreamSession liveSession) async {
+  Future<bool> _connectLiveSignaling(LiveStreamSession liveSession) async {
     await _disconnectLiveSignaling();
-    if (!mounted) return;
+    if (!mounted) return false;
+    if (liveSession.transport == 'webrtc') {
+      final connected = await _liveWebRtcService.connect(
+        url: liveSession.signalingUrl.isEmpty
+            ? _config.liveSignalingWebSocketUrl
+            : liveSession.signalingUrl,
+        username: _session?.nrp ?? liveSession.officerId,
+        sessionId: liveSession.sessionId,
+        deviceId: liveSession.deviceId,
+      );
+      if (!mounted) return connected;
+      setState(() {
+        _liveTransportMode = liveSession.transport;
+        _liveSignalingStatus = connected
+            ? 'Signaling Live Cam tersambung.'
+            : 'Signaling Live Cam gagal.';
+        _liveFrameStatus = connected
+            ? 'Streaming kamera + mikrofon ke dashboard.'
+            : 'Live Cam WebRTC gagal tersambung.';
+      });
+      return connected;
+    }
     setState(() {
       _liveTransportMode = liveSession.transport;
-      _liveSignalingStatus = liveSession.transport == 'webrtc'
-          ? 'Server siap realtime push dashboard.'
-          : 'Fallback snapshot aktif.';
+      _liveSignalingStatus = 'Fallback snapshot aktif.';
     });
+    return true;
   }
 
   Future<void> _disconnectLiveSignaling() async {
+    await _liveWebRtcService.disconnect();
     if (!mounted) return;
     setState(() {
       _liveSignalingStatus = 'Signaling belum aktif';
@@ -571,6 +632,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         throw Exception('Frame stream tidak dapat diencode');
       }
       final dataUrl = 'data:image/jpeg;base64,${base64Encode(encoded)}';
+      debugPrint(
+        '[live-frame-send] session=$liveSessionId next=${_liveFrameCount + 1} bytes=${encoded.length} loc=${_currentLat?.toStringAsFixed(4) ?? '-'},${_currentLng?.toStringAsFixed(4) ?? '-'}',
+      );
       await _backend.pushLiveFrame(
         sessionId: liveSessionId,
         officerId: session.nrp,
@@ -592,6 +656,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         await _refreshLiveSessions();
       }
     } catch (error) {
+      debugPrint('[live-frame-error] session=$liveSessionId error=$error');
       if (mounted) {
         setState(() {
           _liveFrameStatus = 'Frame stream gagal: $error';
@@ -1373,23 +1438,58 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       _liveFrameStatus = 'Menghubungkan Live Cam mode cepat...';
     });
     _syncBlackoutState();
-    await _connectLiveSignaling(liveSession);
+    if (liveSession.transport == 'webrtc') {
+      try {
+        await _cameraController?.dispose();
+      } catch (_) {}
+      if (mounted) {
+        setState(() {
+          _cameraController = null;
+          _cameraError = null;
+        });
+      }
+    }
+    final connected = await _connectLiveSignaling(liveSession);
+    if (!connected) {
+      await _backend.stopLiveStream(
+        sessionId: liveSession.sessionId,
+        officerId: session.nrp,
+      );
+      if (!mounted) return;
+      setState(() {
+        _isRecording = false;
+        _recordingStartedAt = null;
+        _activeLiveSessionId = null;
+        _liveTransportMode = liveSession.transport;
+        _liveSignalingStatus = 'Signaling Live Cam gagal.';
+        _liveFrameStatus = 'Live Cam dibatalkan.';
+      });
+      await _ensureCameraReady();
+      _showMessage('Live Cam WebRTC gagal tersambung ke dashboard.');
+      return;
+    }
     await _sendPresenceHeartbeat();
     await _refreshLiveSessions();
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
-    await Future<void>.delayed(
-      const Duration(milliseconds: _liveFrameWarmupMs),
-    );
-    await _startLiveImageStream();
-    _showMessage('Live Cam aktif. Stream frame berjalan ke server.');
+    if (liveSession.transport == 'webrtc') {
+      _showMessage('Live Cam aktif. Video + suara berjalan ke dashboard.');
+    } else {
+      await Future<void>.delayed(
+        const Duration(milliseconds: _liveFrameWarmupMs),
+      );
+      await _startLiveImageStream();
+      _showMessage('Live Cam aktif. Stream frame berjalan ke server.');
+    }
   }
 
   Future<void> _finishRecordingMode() async {
     if (!_isRecording) return;
     _ticker?.cancel();
-    await _stopLiveImageStream();
+    if (_liveTransportMode != 'webrtc') {
+      await _stopLiveImageStream();
+    }
     await _disconnectLiveSignaling();
     try {
       final session = _session;
@@ -1411,6 +1511,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       });
       await _sendPresenceHeartbeat();
       await _refreshLiveSessions();
+      if (_liveTransportMode == 'webrtc') {
+        await _ensureCameraReady();
+      }
       _syncBlackoutState();
       _showMessage('Live Cam dihentikan. Monitoring server selesai.');
     } catch (error) {
@@ -1423,6 +1526,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         _liveFrameStatus = 'Live Cam gagal dihentikan';
       });
       await _refreshLiveSessions();
+      if (_liveTransportMode == 'webrtc') {
+        await _ensureCameraReady();
+      }
       _syncBlackoutState();
       _showMessage('Gagal menghentikan live stream: $error');
     }
@@ -1660,6 +1766,10 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
           formatDate: _formatDate,
         );
       case BodyWornTab.record:
+        final livePreviewReady =
+            _isRecording &&
+            _liveTransportMode == 'webrtc' &&
+            _liveWebRtcService.localRenderer != null;
         return RecordTab(
           isRecording: _isRecording,
           isMuted: _isMuted,
@@ -1667,7 +1777,8 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
           isBlackoutActive: _isBlackoutActive,
           preview: _buildCameraPreview(),
           previewAspectRatio: _cameraController?.value.aspectRatio ?? (9 / 16),
-          cameraReady: _cameraController?.value.isInitialized == true,
+          cameraReady:
+              livePreviewReady || _cameraController?.value.isInitialized == true,
           cameraStatusText: _cameraStatusText(),
           permissions: _permissions,
           recordingClock: _recordingClock(),
@@ -1772,6 +1883,16 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   }
 
   Widget? _buildCameraPreview() {
+    final liveRenderer = _liveWebRtcService.localRenderer;
+    if (_isRecording &&
+        _liveTransportMode == 'webrtc' &&
+        liveRenderer != null) {
+      return RTCVideoView(
+        liveRenderer,
+        objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+        mirror: false,
+      );
+    }
     final controller = _cameraController;
     if (controller == null || !controller.value.isInitialized) {
       return null;
@@ -1783,7 +1904,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     if (_isRecording) {
       return _liveSignalingStatus.isEmpty
           ? _liveFrameStatus
-          : '$_liveFrameStatus � $_liveSignalingStatus';
+          : '$_liveFrameStatus · $_liveSignalingStatus';
     }
     if (_cameraError != null) {
       return 'Kamera gagal: $_cameraError';
@@ -1801,7 +1922,8 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     setState(() {
       _currentTab = tab;
     });
-    if (tab == BodyWornTab.record) {
+    if (tab == BodyWornTab.record &&
+        !(_isRecording && _liveTransportMode == 'webrtc')) {
       await _ensureCameraReady();
     }
     if (tab == BodyWornTab.ptt) {
