@@ -18,6 +18,7 @@ import 'live_frame_encoder.dart';
 import 'models.dart';
 import 'navigation.dart';
 import 'polri_backend_api.dart';
+import 'ptt_webrtc_service.dart';
 import 'storage.dart';
 import 'tabs_primary.dart';
 import 'tabs_secondary.dart';
@@ -159,6 +160,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   String _liveSignalingStatus = 'Signaling belum aktif';
   late final AppConfig _config;
   late final BackendGateway _backend;
+  late final PttWebRtcService _pttWebRtcService;
 
   static const _kDeviceChannel = MethodChannel('polri_bwc/device');
 
@@ -213,6 +215,10 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     super.initState();
     _config = AppConfig.fromEnvironment();
     _backend = PolriBackendApi(config: _config);
+    _pttWebRtcService = PttWebRtcService(
+      onState: _handlePttStateEvent,
+      onError: _handlePttErrorEvent,
+    );
     WidgetsBinding.instance.addObserver(this);
     _initialize();
     // Proximity sensor dinonaktifkan sementara.
@@ -300,7 +306,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
           : DateTime.now().difference(startedAt).inSeconds;
       unawaited(() async {
         try {
-          await _kDeviceChannel.invokeMethod('stopNativePtt');
+          await _pttWebRtcService.stopTalking();
         } catch (_) {}
         try {
           await _backend.stopPttTransmit(
@@ -368,8 +374,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     }
 
     try {
-      final started =
-          await _kDeviceChannel.invokeMethod<bool>('startNativePtt') ?? false;
+      final started = await _pttWebRtcService.startTalking();
       if (!started) {
         await _backend.stopPttTransmit(
           channelId: talkChannelId,
@@ -408,7 +413,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         : DateTime.now().difference(startedAt).inSeconds;
 
     try {
-      await _kDeviceChannel.invokeMethod('stopNativePtt');
+      await _pttWebRtcService.stopTalking();
     } catch (_) {}
 
     if (mounted) {
@@ -680,7 +685,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     }
     setState(() => _selectedPttChannelId = id);
     try {
-      await _kDeviceChannel.invokeMethod('updatePttChannel', {'channelId': id});
+      await _pttWebRtcService.updateChannel(id);
     } catch (_) {}
     await _updateNotification();
     await _sendPresenceHeartbeat();
@@ -694,13 +699,12 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         if (mounted) setState(() => _isPttConnected = false);
         return;
       }
-      await _kDeviceChannel.invokeMethod('configurePttAudio', {
-        'host': config.apiHost,
-        'port': config.pttAudioPort,
-        'username': session.nrp,
-        'channelId': _selectedPttChannelId,
-        'deviceId': 'android_${session.nrp}',
-      });
+      await _pttWebRtcService.connect(
+        url: config.pttSignalingWebSocketUrl,
+        username: session.nrp,
+        channelId: _selectedPttChannelId,
+        deviceId: 'android_${session.nrp}',
+      );
       await _kDeviceChannel.invokeMethod('startPersistentMode');
       await _updateNotification();
       await _refreshPttData();
@@ -712,7 +716,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       await _stopNativePtt();
     }
     try {
-      await _kDeviceChannel.invokeMethod('disconnectPttAudio');
+      await _pttWebRtcService.disconnect();
       await _kDeviceChannel.invokeMethod('stopPersistentMode');
     } catch (_) {}
     if (mounted) setState(() => _isPttConnected = false);
