@@ -17,10 +17,13 @@ class MockBackendService implements BackendGateway {
   String get connectionLabel => 'Mock backend lokal';
 
   @override
-  Future<List<PresenceEntry>> loadPresence({String? channelId}) async => const [];
+  Future<List<PresenceEntry>> loadPresence({String? channelId}) async =>
+      const [];
 
   @override
-  Future<List<PttTransmission>> loadPttFeed({required String channelId}) async => const [];
+  Future<List<PttTransmission>> loadPttFeed({
+    required String channelId,
+  }) async => const [];
 
   @override
   Future<PttStartResult> startPttTransmit({
@@ -72,10 +75,8 @@ class MockBackendService implements BackendGateway {
     final prefs = await SharedPreferences.getInstance();
     final encoded = jsonEncode(
       threads.map(
-        (key, value) => MapEntry(
-          key,
-          value.map((message) => message.toJson()).toList(),
-        ),
+        (key, value) =>
+            MapEntry(key, value.map((message) => message.toJson()).toList()),
       ),
     );
     await prefs.setString(_chatPrefsKey, encoded);
@@ -202,7 +203,8 @@ class MockBackendService implements BackendGateway {
     required String threadName,
     required Map<String, List<ChatMessage>> currentThreads,
   }) async {
-    final reply = _autoReplies[DateTime.now().millisecond % _autoReplies.length];
+    final reply =
+        _autoReplies[DateTime.now().millisecond % _autoReplies.length];
     final updated = [
       ...(currentThreads[threadName] ?? const <ChatMessage>[]),
       ChatMessage(
@@ -293,4 +295,3 @@ class MockBackendService implements BackendGateway {
     'Noted, akan ditindaklanjuti.',
   ];
 }
-

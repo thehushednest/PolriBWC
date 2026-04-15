@@ -34,6 +34,7 @@ Future<void> main(List<String> args) async {
   final audioWebSocketRelay = PttAudioWebSocketRelay(
     canRelayAudio: canRelayAudio,
   );
+  final pttSignalingRelay = PttWebRtcSignalingRelay();
   final liveWebSocketRelay = LiveMonitorWebSocketRelay(
     initialSessions: _resolvedLiveSessions(store),
   );
@@ -56,6 +57,7 @@ Future<void> main(List<String> args) async {
         request,
         store,
         audioWebSocketRelay,
+        pttSignalingRelay,
         liveWebSocketRelay,
         dashboardAuth,
       ),
@@ -67,6 +69,7 @@ Future<void> _handleRequest(
   HttpRequest request,
   LocalServerStore store,
   PttAudioWebSocketRelay audioWebSocketRelay,
+  PttWebRtcSignalingRelay pttSignalingRelay,
   LiveMonitorWebSocketRelay liveWebSocketRelay,
   DashboardAuthManager dashboardAuth,
 ) async {
@@ -80,6 +83,12 @@ Future<void> _handleRequest(
     if (path == '/api/v1/ptt/ws' &&
         WebSocketTransformer.isUpgradeRequest(request)) {
       await audioWebSocketRelay.handleUpgrade(request);
+      return;
+    }
+
+    if (path == '/api/v1/ptt/signal/ws' &&
+        WebSocketTransformer.isUpgradeRequest(request)) {
+      await pttSignalingRelay.handleUpgrade(request);
       return;
     }
 
@@ -102,8 +111,7 @@ Future<void> _handleRequest(
       response.write(
         _buildDashboardLoginPage(
           dashboardBasePath: dashboardBasePath,
-          invalidCredentials:
-              request.uri.queryParameters['error'] == 'invalid',
+          invalidCredentials: request.uri.queryParameters['error'] == 'invalid',
         ),
       );
       await response.close();
@@ -140,10 +148,7 @@ Future<void> _handleRequest(
     }
 
     if (method == 'GET' && path == '/dashboard/logout') {
-      final existingToken = _readCookie(
-        request,
-        _dashboardSessionCookieName,
-      );
+      final existingToken = _readCookie(request, _dashboardSessionCookieName);
       if (existingToken.isNotEmpty) {
         dashboardAuth.revokeToken(existingToken);
       }
@@ -1722,6 +1727,118 @@ class PttAudioWebSocketRelay {
   }
 }
 
+class PttWebRtcSignalingRelay {
+  final List<_PttSignalingClient> _clients = [];
+
+  Future<void> handleUpgrade(HttpRequest request) async {
+    final socket = await WebSocketTransformer.upgrade(request);
+    final client = _PttSignalingClient(
+      clientId:
+          'ptt_${DateTime.now().microsecondsSinceEpoch}_${Random().nextInt(999999)}',
+      socket: socket,
+      onDisconnect: _removeClient,
+      onJoin: _handleJoin,
+      onSignal: _relaySignal,
+    );
+    _clients.add(client);
+    client.start();
+  }
+
+  void _handleJoin(_PttSignalingClient client, Map<String, dynamic> message) {
+    final previousChannel = client.channelId;
+    final previousUsername = client.username;
+    client.username = message['username'] as String? ?? client.username;
+    client.channelId = message['channelId'] as String? ?? client.channelId;
+    client.deviceId = message['deviceId'] as String? ?? client.deviceId;
+
+    if (previousChannel.isNotEmpty &&
+        previousChannel != client.channelId &&
+        previousUsername.isNotEmpty) {
+      for (final peer in _clients.toList()) {
+        if (identical(peer, client)) continue;
+        if (peer.channelId != previousChannel) continue;
+        peer.send({
+          'type': 'peer-left',
+          'clientId': client.clientId,
+          'username': client.username,
+          'channelId': previousChannel,
+        });
+      }
+    }
+
+    final peers = _clients
+        .where(
+          (peer) =>
+              !identical(peer, client) &&
+              peer.channelId == client.channelId &&
+              peer.username.isNotEmpty,
+        )
+        .map(
+          (peer) => {
+            'clientId': peer.clientId,
+            'username': peer.username,
+            'channelId': peer.channelId,
+            'deviceId': peer.deviceId,
+          },
+        )
+        .toList();
+
+    client.send({
+      'type': 'hello-ack',
+      'clientId': client.clientId,
+      'channelId': client.channelId,
+      'peers': peers,
+    });
+
+    for (final peer in _clients.toList()) {
+      if (identical(peer, client)) continue;
+      if (peer.channelId != client.channelId) continue;
+      peer.send({
+        'type': 'peer-joined',
+        'peer': {
+          'clientId': client.clientId,
+          'username': client.username,
+          'channelId': client.channelId,
+          'deviceId': client.deviceId,
+        },
+      });
+    }
+  }
+
+  void _relaySignal(_PttSignalingClient sender, Map<String, dynamic> message) {
+    final targetClientId = message['targetClientId'] as String? ?? '';
+    if (targetClientId.isEmpty) return;
+    _PttSignalingClient? target;
+    for (final client in _clients) {
+      if (client.clientId == targetClientId) {
+        target = client;
+        break;
+      }
+    }
+    if (target == null) return;
+    target.send({
+      'type': 'signal',
+      'fromClientId': sender.clientId,
+      'fromUsername': sender.username,
+      'channelId': sender.channelId,
+      'data': message['data'],
+    });
+  }
+
+  void _removeClient(_PttSignalingClient client) {
+    _clients.remove(client);
+    for (final peer in _clients.toList()) {
+      if (peer.channelId != client.channelId) continue;
+      peer.send({
+        'type': 'peer-left',
+        'clientId': client.clientId,
+        'username': client.username,
+        'channelId': client.channelId,
+      });
+    }
+  }
+}
+
 class LiveMonitorWebSocketRelay {
   LiveMonitorWebSocketRelay({
     required List<Map<String, dynamic>> initialSessions,
@@ -1769,6 +1886,58 @@ class LiveMonitorWebSocketRelay {
         _clients.remove(client);
       }
     }
+  }
+}
+
+class _PttSignalingClient {
+  _PttSignalingClient({
+    required this.clientId,
+    required this.socket,
+    required this.onDisconnect,
+    required this.onJoin,
+    required this.onSignal,
+  });
+
+  final String clientId;
+  final WebSocket socket;
+  final void Function(_PttSignalingClient client) onDisconnect;
+  final void Function(_PttSignalingClient client, Map<String, dynamic> message)
+  onJoin;
+  final void Function(_PttSignalingClient client, Map<String, dynamic> message)
+  onSignal;
+
+  String username = '';
+  String channelId = '';
+  String deviceId = '';
+
+  void start() {
+    socket.listen(
+      (raw) {
+        if (raw is! String) return;
+        final message = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+        switch (message['type'] as String? ?? '') {
+          case 'hello':
+          case 'join':
+            onJoin(this, message);
+            break;
+          case 'signal':
+            onSignal(this, message);
+            break;
+          case 'ping':
+            send({'type': 'pong'});
+            break;
+        }
+      },
+      onDone: () => onDisconnect(this),
+      onError: (_) => onDisconnect(this),
+      cancelOnError: true,
+    );
+  }
+
+  void send(Map<String, dynamic> payload) {
+    try {
+      socket.add(jsonEncode(payload));
+    } catch (_) {}
   }
 }
 

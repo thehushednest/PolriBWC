@@ -18,6 +18,7 @@ import 'live_frame_encoder.dart';
 import 'models.dart';
 import 'navigation.dart';
 import 'polri_backend_api.dart';
+import 'ptt_webrtc_service.dart';
 import 'storage.dart';
 import 'tabs_primary.dart';
 import 'tabs_secondary.dart';
@@ -55,15 +56,9 @@ class BodyWornApp extends StatelessWidget {
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(14),
-            borderSide: const BorderSide(
-              color: Color(0xFF2B61AE),
-              width: 1.5,
-            ),
+            borderSide: const BorderSide(color: Color(0xFF2B61AE), width: 1.5),
           ),
-          hintStyle: const TextStyle(
-            color: Color(0xFF9AA6B6),
-            fontSize: 14,
-          ),
+          hintStyle: const TextStyle(color: Color(0xFF9AA6B6), fontSize: 14),
         ),
         snackBarTheme: SnackBarThemeData(
           backgroundColor: const Color(0xFF1C2333),
@@ -165,6 +160,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   String _liveSignalingStatus = 'Signaling belum aktif';
   late final AppConfig _config;
   late final BackendGateway _backend;
+  late final PttWebRtcService _pttWebRtcService;
 
   static const _kDeviceChannel = MethodChannel('polri_bwc/device');
 
@@ -197,17 +193,17 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       status: entry.isTalking
           ? 'PTT'
           : isRecording
-              ? 'Live'
-              : entry.resolvedStatus == 'online'
-                  ? 'Standby'
-                  : 'Offline',
+          ? 'Live'
+          : entry.resolvedStatus == 'online'
+          ? 'Standby'
+          : 'Offline',
       statusColor: entry.isTalking
           ? const Color(0xFFFF6A6A)
           : isRecording
-              ? const Color(0xFF19A66A)
-              : entry.resolvedStatus == 'online'
-                  ? const Color(0xFF4A88E6)
-                  : const Color(0xFF9EA8B6),
+          ? const Color(0xFF19A66A)
+          : entry.resolvedStatus == 'online'
+          ? const Color(0xFF4A88E6)
+          : const Color(0xFF9EA8B6),
       dotColor: entry.resolvedStatus == 'online'
           ? const Color(0xFF1BA467)
           : const Color(0xFF9EA8B6),
@@ -219,6 +215,10 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     super.initState();
     _config = AppConfig.fromEnvironment();
     _backend = PolriBackendApi(config: _config);
+    _pttWebRtcService = PttWebRtcService(
+      onState: _handlePttStateEvent,
+      onError: _handlePttErrorEvent,
+    );
     WidgetsBinding.instance.addObserver(this);
     _initialize();
     // Proximity sensor dinonaktifkan sementara.
@@ -248,71 +248,78 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         }
         return;
       case 'pttAudioState':
-        final arguments = Map<String, dynamic>.from(
-          (call.arguments as Map?)?.cast<String, dynamic>() ?? const {},
+        _handlePttStateEvent(
+          Map<String, dynamic>.from(
+            (call.arguments as Map?)?.cast<String, dynamic>() ?? const {},
+          ),
         );
-        final state = arguments['state'] as String? ?? '';
-        final isCapturing = arguments['isCapturing'] as bool? ?? false;
-        if (!mounted) return;
-        setState(() {
-          // `reconnecting` dianggap tetap connected dari sudut pandang UI
-          // agar indikator radio tidak berkedip setiap jitter.
-          _isPttConnected = state == 'connected' ||
-              state == 'recording' ||
-              state == 'reconnecting';
-          // Jaga `_isTalking` tetap selaras dengan native. Native adalah
-          // source of truth untuk status mic; Flutter hanya menampilkan.
-          if (isCapturing && !_isTalking) {
-            _isTalking = true;
-            _pttTalkingChannelId ??= _selectedPttChannelId;
-            _pttStartedAt ??= DateTime.now();
-          } else if (!isCapturing && _isTalking && state == 'disconnected') {
-            _isTalking = false;
-            _pttTalkingChannelId = null;
-            _pttStartedAt = null;
-          }
-        });
         return;
       case 'pttAudioError':
-        final arguments = Map<String, dynamic>.from(
-          (call.arguments as Map?)?.cast<String, dynamic>() ?? const {},
+        _handlePttErrorEvent(
+          (Map<String, dynamic>.from(
+                    (call.arguments as Map?)?.cast<String, dynamic>() ??
+                        const {},
+                  ))['message']
+                  as String? ??
+              '',
         );
-        final message = arguments['message'] as String? ?? '';
-        if (!mounted) return;
-        // Saat error fatal, lepas floor server-side juga supaya officer tidak
-        // terkunci ditolak oleh sesi-nya sendiri pada tekan berikutnya.
-        final session = _session;
-        final talkChannelId = _pttTalkingChannelId ?? _selectedPttChannelId;
-        final startedAt = _pttStartedAt;
-        final wasTalking = _isTalking;
-        setState(() {
-          _isPttConnected = false;
-          _isTalking = false;
-          _pttTalkingChannelId = null;
-          _pttStartedAt = null;
-        });
-        if (wasTalking && session != null) {
-          final durationSeconds = startedAt == null
-              ? 0
-              : DateTime.now().difference(startedAt).inSeconds;
-          unawaited(() async {
-            try {
-              await _kDeviceChannel.invokeMethod('stopNativePtt');
-            } catch (_) {}
-            try {
-              await _backend.stopPttTransmit(
-                channelId: talkChannelId,
-                officerId: session.nrp,
-                durationSeconds: durationSeconds,
-              );
-            } catch (_) {}
-            await _refreshPttData();
-          }());
-        }
-        if (message.isNotEmpty) {
-          _showMessage(message);
-        }
         return;
+    }
+  }
+
+  void _handlePttStateEvent(Map<String, dynamic> arguments) {
+    final state = arguments['state'] as String? ?? '';
+    final isCapturing = arguments['isCapturing'] as bool? ?? false;
+    if (!mounted) return;
+    setState(() {
+      _isPttConnected =
+          state == 'connected' ||
+          state == 'recording' ||
+          state == 'reconnecting';
+      if (isCapturing && !_isTalking) {
+        _isTalking = true;
+        _pttTalkingChannelId ??= _selectedPttChannelId;
+        _pttStartedAt ??= DateTime.now();
+      } else if (!isCapturing && _isTalking && state == 'disconnected') {
+        _isTalking = false;
+        _pttTalkingChannelId = null;
+        _pttStartedAt = null;
+      }
+    });
+  }
+
+  void _handlePttErrorEvent(String message) {
+    if (!mounted) return;
+    final session = _session;
+    final talkChannelId = _pttTalkingChannelId ?? _selectedPttChannelId;
+    final startedAt = _pttStartedAt;
+    final wasTalking = _isTalking;
+    setState(() {
+      _isPttConnected = false;
+      _isTalking = false;
+      _pttTalkingChannelId = null;
+      _pttStartedAt = null;
+    });
+    if (wasTalking && session != null) {
+      final durationSeconds = startedAt == null
+          ? 0
+          : DateTime.now().difference(startedAt).inSeconds;
+      unawaited(() async {
+        try {
+          await _pttWebRtcService.stopTalking();
+        } catch (_) {}
+        try {
+          await _backend.stopPttTransmit(
+            channelId: talkChannelId,
+            officerId: session.nrp,
+            durationSeconds: durationSeconds,
+          );
+        } catch (_) {}
+        await _refreshPttData();
+      }());
+    }
+    if (message.isNotEmpty) {
+      _showMessage(message);
     }
   }
 
@@ -347,7 +354,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     final session = _session;
     if (session == null) return;
     if (_isMuted) {
-      _showMessage('Audio PTT sedang dimatikan. Aktifkan audio untuk transmit.');
+      _showMessage(
+        'Audio PTT sedang dimatikan. Aktifkan audio untuk transmit.',
+      );
       return;
     }
     final talkChannelId = _selectedPttChannelId;
@@ -365,8 +374,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     }
 
     try {
-      final started =
-          await _kDeviceChannel.invokeMethod<bool>('startNativePtt') ?? false;
+      final started = await _pttWebRtcService.startTalking();
       if (!started) {
         await _backend.stopPttTransmit(
           channelId: talkChannelId,
@@ -405,7 +413,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         : DateTime.now().difference(startedAt).inSeconds;
 
     try {
-      await _kDeviceChannel.invokeMethod('stopNativePtt');
+      await _pttWebRtcService.stopTalking();
     } catch (_) {}
 
     if (mounted) {
@@ -448,12 +456,12 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     final session = _session;
     final incoming = notifyIncoming && session != null
         ? alerts
-            .where(
-              (alert) =>
-                  !_seenSosAlertIds.contains(alert.id) &&
-                  alert.officerId != session.nrp,
-            )
-            .toList()
+              .where(
+                (alert) =>
+                    !_seenSosAlertIds.contains(alert.id) &&
+                    alert.officerId != session.nrp,
+              )
+              .toList()
         : const <SosAlert>[];
     setState(() {
       _sosAlerts = alerts;
@@ -469,7 +477,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     if (!mounted) return;
     final activeSession = _activeLiveSessionId == null
         ? null
-        : sessions.where((item) => item.sessionId == _activeLiveSessionId).firstOrNull;
+        : sessions
+              .where((item) => item.sessionId == _activeLiveSessionId)
+              .firstOrNull;
     setState(() {
       if (activeSession != null) {
         _liveFrameCount = activeSession.frameCount;
@@ -490,10 +500,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     if (!mounted) return;
     setState(() {
       _liveTransportMode = liveSession.transport;
-      _liveSignalingStatus =
-          liveSession.transport == 'webrtc'
-              ? 'Server siap realtime push dashboard.'
-              : 'Fallback snapshot aktif.';
+      _liveSignalingStatus = liveSession.transport == 'webrtc'
+          ? 'Server siap realtime push dashboard.'
+          : 'Fallback snapshot aktif.';
     });
   }
 
@@ -541,7 +550,10 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   Future<void> _pushLiveCameraImage(CameraImage image) async {
     final session = _session;
     final liveSessionId = _activeLiveSessionId;
-    if (!_isRecording || _isSendingLiveFrame || session == null || liveSessionId == null) {
+    if (!_isRecording ||
+        _isSendingLiveFrame ||
+        session == null ||
+        liveSessionId == null) {
       return;
     }
 
@@ -589,6 +601,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       _isSendingLiveFrame = false;
     }
   }
+
   void _startSosPolling() {
     _sosPollTimer?.cancel();
     _sosPollTimer = Timer.periodic(
@@ -672,7 +685,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     }
     setState(() => _selectedPttChannelId = id);
     try {
-      await _kDeviceChannel.invokeMethod('updatePttChannel', {'channelId': id});
+      await _pttWebRtcService.updateChannel(id);
     } catch (_) {}
     await _updateNotification();
     await _sendPresenceHeartbeat();
@@ -686,14 +699,13 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         if (mounted) setState(() => _isPttConnected = false);
         return;
       }
-      await _kDeviceChannel.invokeMethod('configurePttAudio', {
-        'url': config.pttWebSocketUrl,
-        'username': session.nrp,
-        'channelId': _selectedPttChannelId,
-        'deviceId': 'android_${session.nrp}',
-      });
+      await _pttWebRtcService.connect(
+        url: config.pttSignalingWebSocketUrl,
+        username: session.nrp,
+        channelId: _selectedPttChannelId,
+        deviceId: 'android_${session.nrp}',
+      );
       await _kDeviceChannel.invokeMethod('startPersistentMode');
-      if (mounted) setState(() => _isPttConnected = true);
       await _updateNotification();
       await _refreshPttData();
     } catch (_) {}
@@ -704,7 +716,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       await _stopNativePtt();
     }
     try {
-      await _kDeviceChannel.invokeMethod('disconnectPttAudio');
+      await _pttWebRtcService.disconnect();
       await _kDeviceChannel.invokeMethod('stopPersistentMode');
     } catch (_) {}
     if (mounted) setState(() => _isPttConnected = false);
@@ -733,7 +745,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       return;
     }
     try {
-      await controller.setFlashMode(_isFlashOn ? FlashMode.torch : FlashMode.off);
+      await controller.setFlashMode(
+        _isFlashOn ? FlashMode.torch : FlashMode.off,
+      );
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -754,7 +768,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       _isFlashOn = !_isFlashOn;
     });
     await _applyFlashMode();
-    _showMessage(_isFlashOn ? 'Flash bodyworn aktif.' : 'Flash bodyworn dimatikan.');
+    _showMessage(
+      _isFlashOn ? 'Flash bodyworn aktif.' : 'Flash bodyworn dimatikan.',
+    );
   }
 
   Future<void> _captureSnapshot() async {
@@ -770,7 +786,8 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       return;
     }
 
-    final shouldResumeStream = _isRecording && controller.value.isStreamingImages;
+    final shouldResumeStream =
+        _isRecording && controller.value.isStreamingImages;
     if (shouldResumeStream) {
       unawaited(_stopLiveImageStream());
     }
@@ -786,12 +803,15 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       }
     }
   }
+
   Future<void> _updateNotification() async {
     final activeChannelId = _pttTalkingChannelId ?? _selectedPttChannelId;
-    final channelLabel = _pttChannels
-        .where((c) => c.id == activeChannelId)
-        .map((c) => c.label)
-        .firstOrNull ?? activeChannelId.toUpperCase();
+    final channelLabel =
+        _pttChannels
+            .where((c) => c.id == activeChannelId)
+            .map((c) => c.label)
+            .firstOrNull ??
+        activeChannelId.toUpperCase();
     try {
       await _kDeviceChannel.invokeMethod('updatePersistentNotification', {
         'status': _isTalking ? 'TRANSMITTING' : 'Standby',
@@ -835,7 +855,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final controller = _cameraController;
     if (state == AppLifecycleState.inactive) {
-      if (!_isRecording && controller != null && _currentTab == BodyWornTab.record) {
+      if (!_isRecording &&
+          controller != null &&
+          _currentTab == BodyWornTab.record) {
         controller.dispose();
         _cameraController = null;
       }
@@ -852,7 +874,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
           deviceId: 'android_${_session!.nrp}',
           status: 'live',
           startedAtIso: DateTime.now().toIso8601String(),
-          locationLabel: _currentLat == null ? 'Lokasi belum tersedia' : 'Lat ${_currentLat!.toStringAsFixed(4)}, Lng ${_currentLng!.toStringAsFixed(4)}',
+          locationLabel: _currentLat == null
+              ? 'Lokasi belum tersedia'
+              : 'Lat ${_currentLat!.toStringAsFixed(4)}, Lng ${_currentLng!.toStringAsFixed(4)}',
           channelId: _selectedPttChannelId,
           transport: 'webrtc',
           signalingUrl: _config.liveSignalingWebSocketUrl,
@@ -961,7 +985,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       );
       await controller.initialize();
       await controller.lockCaptureOrientation(DeviceOrientation.portraitUp);
-      await controller.setFlashMode(_isFlashOn ? FlashMode.torch : FlashMode.off);
+      await controller.setFlashMode(
+        _isFlashOn ? FlashMode.torch : FlashMode.off,
+      );
       if (!mounted) {
         await controller.dispose();
         return;
@@ -987,16 +1013,86 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
 
   // Kredensial fallback untuk digunakan saat server tidak tersedia.
   static const _localUsers = {
-    'test1': (name: 'Test Satu', rank: '', unit: 'Satuan Alpha', shift: 'Shift Pagi Aktif', window: '07:00–15:00', pass: 'test1'),
-    'test2': (name: 'Test Dua', rank: '', unit: 'Satuan Bravo', shift: 'Shift Siang Aktif', window: '15:00–23:00', pass: 'test2'),
-    'test3': (name: 'Test Tiga', rank: '', unit: 'Satuan Charlie', shift: 'Shift Malam Aktif', window: '23:00–07:00', pass: 'test3'),
-    'test4': (name: 'Test Empat', rank: '', unit: 'Satuan Delta', shift: 'Shift Pagi Aktif', window: '07:00–15:00', pass: 'test4'),
-    'test5': (name: 'Test Lima', rank: '', unit: 'Satuan Echo', shift: 'Shift Siang Aktif', window: '15:00–23:00', pass: 'test5'),
-    'test6': (name: 'Test Enam', rank: '', unit: 'Satuan Foxtrot', shift: 'Shift Malam Aktif', window: '23:00–07:00', pass: 'test6'),
-    'test7': (name: 'Test Tujuh', rank: '', unit: 'Satuan Golf', shift: 'Shift Pagi Aktif', window: '07:00–15:00', pass: 'test7'),
-    'test8': (name: 'Test Delapan', rank: '', unit: 'Satuan Hotel', shift: 'Shift Siang Aktif', window: '15:00–23:00', pass: 'test8'),
-    'test9': (name: 'Test Sembilan', rank: '', unit: 'Satuan India', shift: 'Shift Malam Aktif', window: '23:00–07:00', pass: 'test9'),
-    'test10': (name: 'Test Sepuluh', rank: '', unit: 'Satuan Juliet', shift: 'Shift Pagi Aktif', window: '07:00–15:00', pass: 'test10'),
+    'test1': (
+      name: 'Test Satu',
+      rank: '',
+      unit: 'Satuan Alpha',
+      shift: 'Shift Pagi Aktif',
+      window: '07:00–15:00',
+      pass: 'test1',
+    ),
+    'test2': (
+      name: 'Test Dua',
+      rank: '',
+      unit: 'Satuan Bravo',
+      shift: 'Shift Siang Aktif',
+      window: '15:00–23:00',
+      pass: 'test2',
+    ),
+    'test3': (
+      name: 'Test Tiga',
+      rank: '',
+      unit: 'Satuan Charlie',
+      shift: 'Shift Malam Aktif',
+      window: '23:00–07:00',
+      pass: 'test3',
+    ),
+    'test4': (
+      name: 'Test Empat',
+      rank: '',
+      unit: 'Satuan Delta',
+      shift: 'Shift Pagi Aktif',
+      window: '07:00–15:00',
+      pass: 'test4',
+    ),
+    'test5': (
+      name: 'Test Lima',
+      rank: '',
+      unit: 'Satuan Echo',
+      shift: 'Shift Siang Aktif',
+      window: '15:00–23:00',
+      pass: 'test5',
+    ),
+    'test6': (
+      name: 'Test Enam',
+      rank: '',
+      unit: 'Satuan Foxtrot',
+      shift: 'Shift Malam Aktif',
+      window: '23:00–07:00',
+      pass: 'test6',
+    ),
+    'test7': (
+      name: 'Test Tujuh',
+      rank: '',
+      unit: 'Satuan Golf',
+      shift: 'Shift Pagi Aktif',
+      window: '07:00–15:00',
+      pass: 'test7',
+    ),
+    'test8': (
+      name: 'Test Delapan',
+      rank: '',
+      unit: 'Satuan Hotel',
+      shift: 'Shift Siang Aktif',
+      window: '15:00–23:00',
+      pass: 'test8',
+    ),
+    'test9': (
+      name: 'Test Sembilan',
+      rank: '',
+      unit: 'Satuan India',
+      shift: 'Shift Malam Aktif',
+      window: '23:00–07:00',
+      pass: 'test9',
+    ),
+    'test10': (
+      name: 'Test Sepuluh',
+      rank: '',
+      unit: 'Satuan Juliet',
+      shift: 'Shift Pagi Aktif',
+      window: '07:00–15:00',
+      pass: 'test10',
+    ),
   };
 
   Future<void> _activateSession() async {
@@ -1017,10 +1113,10 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
         baseUrl: config.rootUrl,
         timeout: Duration(seconds: config.connectTimeoutSeconds),
       );
-      final result = await client.postJsonWithStatus(
-        '/auth/login',
-        {'username': username, 'password': password},
-      );
+      final result = await client.postJsonWithStatus('/auth/login', {
+        'username': username,
+        'password': password,
+      });
       serverReachable = true;
       if (result.statusCode == 200) {
         final body = result.body as Map<String, dynamic>;
@@ -1042,7 +1138,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
 
     if (!config.useMockBackend && session == null) {
       if (serverReachable) {
-        _showMessage('Login ke server gagal. Periksa kredensial atau respons server.');
+        _showMessage(
+          'Login ke server gagal. Periksa kredensial atau respons server.',
+        );
       } else {
         _showMessage(
           'Tidak dapat terhubung ke server operasional. Pastikan internet dan endpoint aktif.',
@@ -1134,8 +1232,8 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       status: _isTalking
           ? 'ptt'
           : _isRecording
-              ? 'live'
-              : 'online',
+          ? 'live'
+          : 'online',
       activeChannelId: _pttTalkingChannelId ?? _selectedPttChannelId,
       latitude: position?.latitude,
       longitude: position?.longitude,
@@ -1146,7 +1244,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   void _logout() {
     final session = _session;
     final liveSessionId = _activeLiveSessionId;
-    SharedPreferences.getInstance().then((prefs) => prefs.remove(_sessionPrefsKey));
+    SharedPreferences.getInstance().then(
+      (prefs) => prefs.remove(_sessionPrefsKey),
+    );
     _pttRefreshTimer?.cancel();
     _liveRefreshTimer?.cancel();
     _sosPollTimer?.cancel();
@@ -1279,7 +1379,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
-    await Future<void>.delayed(const Duration(milliseconds: _liveFrameWarmupMs));
+    await Future<void>.delayed(
+      const Duration(milliseconds: _liveFrameWarmupMs),
+    );
     await _startLiveImageStream();
     _showMessage('Live Cam aktif. Stream frame berjalan ke server.');
   }
@@ -1569,9 +1671,9 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
           cameraStatusText: _cameraStatusText(),
           permissions: _permissions,
           recordingClock: _recordingClock(),
-          recordingDateLabel: DateFormat('dd MMM yyyy').format(
-            _recordingStartedAt ?? DateTime.now(),
-          ),
+          recordingDateLabel: DateFormat(
+            'dd MMM yyyy',
+          ).format(_recordingStartedAt ?? DateTime.now()),
           recordingBytes: _localSizeBytes,
           locationLabel: _currentLat != null
               ? 'Lat ${_currentLat!.toStringAsFixed(4)}, Lng ${_currentLng!.toStringAsFixed(4)}'
@@ -1591,10 +1693,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
           onOpenPtt: () => unawaited(_handleRecordScreenPtt()),
           onSelectTag: (tag) => setState(() => _selectedTag = tag),
           onSos: () => unawaited(
-            _triggerSos(
-              source: 'bodyworn',
-              notes: 'SOS dari layar bodyworn',
-            ),
+            _triggerSos(source: 'bodyworn', notes: 'SOS dari layar bodyworn'),
           ),
         );
       case BodyWornTab.map:
@@ -1660,8 +1759,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
           reports: _incidentReports,
           descriptionController: _descriptionController,
           witnessController: _witnessController,
-          onTypeChanged: (value) =>
-              setState(() => _selectedReportType = value),
+          onTypeChanged: (value) => setState(() => _selectedReportType = value),
           onPickRecording: () {
             setState(() => _currentTab = BodyWornTab.gallery);
             _showMessage(
@@ -1712,22 +1810,3 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     _syncBlackoutState();
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

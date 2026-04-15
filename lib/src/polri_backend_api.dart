@@ -10,13 +10,12 @@ import 'backend_gateway.dart';
 import 'models.dart';
 
 class PolriBackendApi implements BackendGateway {
-  PolriBackendApi({
-    required AppConfig config,
-  }) : _config = config,
-       _client = ApiClient(
-         baseUrl: config.rootUrl,
-         timeout: Duration(seconds: config.connectTimeoutSeconds),
-       );
+  PolriBackendApi({required AppConfig config})
+    : _config = config,
+      _client = ApiClient(
+        baseUrl: config.rootUrl,
+        timeout: Duration(seconds: config.connectTimeoutSeconds),
+      );
 
   final AppConfig _config;
   final ApiClient _client;
@@ -35,7 +34,8 @@ class PolriBackendApi implements BackendGateway {
         : '?channelId=$channelId';
     try {
       final decoded =
-          await _client.getJson('${_config.presenceEndpoint}$suffix') as List<dynamic>;
+          await _client.getJson('${_config.presenceEndpoint}$suffix')
+              as List<dynamic>;
       return decoded
           .map((item) => PresenceEntry.fromJson(item as Map<String, dynamic>))
           .toList();
@@ -48,7 +48,9 @@ class PolriBackendApi implements BackendGateway {
   Future<List<PttTransmission>> loadPttFeed({required String channelId}) async {
     try {
       final decoded =
-          await _client.getJson('${_config.pttFeedEndpoint}?channelId=$channelId')
+          await _client.getJson(
+                '${_config.pttFeedEndpoint}?channelId=$channelId',
+              )
               as List<dynamic>;
       return decoded.map((item) {
         final json = item as Map<String, dynamic>;
@@ -76,16 +78,11 @@ class PolriBackendApi implements BackendGateway {
     try {
       final response = await _client.postJsonWithStatus(
         _config.pttTransmitStartEndpoint,
-        {
-          'channelId': channelId,
-          'officerId': officerId,
-          'deviceId': deviceId,
-        },
+        {'channelId': channelId, 'officerId': officerId, 'deviceId': deviceId},
       );
-      final body = Map<String, dynamic>.from(
-        response.body as Map? ?? const {},
-      );
-      if (response.statusCode == 409 || (body['status'] as String? ?? '') == 'busy') {
+      final body = Map<String, dynamic>.from(response.body as Map? ?? const {});
+      if (response.statusCode == 409 ||
+          (body['status'] as String? ?? '') == 'busy') {
         final holder = body['holderOfficerId'] as String? ?? '';
         return PttStartResult(
           granted: false,
@@ -165,7 +162,8 @@ class PolriBackendApi implements BackendGateway {
   @override
   Future<Map<String, List<ChatMessage>>> loadChatThreads() async {
     try {
-      final decoded = await _client.getJson(_config.chatsEndpoint) as Map<String, dynamic>;
+      final decoded =
+          await _client.getJson(_config.chatsEndpoint) as Map<String, dynamic>;
       return decoded.map(
         (key, value) => MapEntry(
           key,
@@ -184,10 +182,8 @@ class PolriBackendApi implements BackendGateway {
     try {
       await _client.postJson(_config.chatsEndpoint, {
         'threads': threads.map(
-          (key, value) => MapEntry(
-            key,
-            value.map((item) => item.toJson()).toList(),
-          ),
+          (key, value) =>
+              MapEntry(key, value.map((item) => item.toJson()).toList()),
         ),
       });
     } catch (_) {
@@ -198,7 +194,8 @@ class PolriBackendApi implements BackendGateway {
   @override
   Future<List<IncidentReport>> loadReports() async {
     try {
-      final decoded = await _client.getJson(_config.reportsEndpoint) as List<dynamic>;
+      final decoded =
+          await _client.getJson(_config.reportsEndpoint) as List<dynamic>;
       return decoded
           .map((item) => IncidentReport.fromJson(item as Map<String, dynamic>))
           .toList();
@@ -221,7 +218,8 @@ class PolriBackendApi implements BackendGateway {
   @override
   Future<List<SosAlert>> loadSosAlerts() async {
     try {
-      final decoded = await _client.getJson(_config.sosEndpoint) as List<dynamic>;
+      final decoded =
+          await _client.getJson(_config.sosEndpoint) as List<dynamic>;
       return decoded
           .map((item) => SosAlert.fromJson(item as Map<String, dynamic>))
           .toList();
@@ -236,7 +234,9 @@ class PolriBackendApi implements BackendGateway {
       final decoded =
           await _client.getJson(_config.liveSessionsEndpoint) as List<dynamic>;
       return decoded
-          .map((item) => LiveStreamSession.fromJson(item as Map<String, dynamic>))
+          .map(
+            (item) => LiveStreamSession.fromJson(item as Map<String, dynamic>),
+          )
           .toList();
     } catch (_) {
       return const [];
@@ -388,11 +388,7 @@ class PolriBackendApi implements BackendGateway {
     try {
       await _client.postJson('${_config.chatsEndpoint}/message', {
         'threadName': threadName,
-        'message': {
-          'fromMe': true,
-          'text': text,
-          'timeLabel': now,
-        },
+        'message': {'fromMe': true, 'text': text, 'timeLabel': now},
       });
     } catch (_) {}
 
@@ -406,9 +402,10 @@ class PolriBackendApi implements BackendGateway {
     required Map<String, List<ChatMessage>> currentThreads,
   }) async {
     try {
-      final response = await _client.postJson('${_config.chatsEndpoint}/auto-reply', {
-        'threadName': threadName,
-      });
+      final response = await _client.postJson(
+        '${_config.chatsEndpoint}/auto-reply',
+        {'threadName': threadName},
+      );
       final items = (response['messages'] as List<dynamic>)
           .map((item) => ChatMessage.fromJson(item as Map<String, dynamic>))
           .toList();
@@ -496,7 +493,9 @@ class PolriBackendApi implements BackendGateway {
       locationLabel: active.locationLabel,
       tagLabel: active.tagLabel,
       relatedToCase: active.relatedToCase,
-      syncProgress: nextStatus == RecordingUploadStatus.uploaded ? 100 : nextProgress,
+      syncProgress: nextStatus == RecordingUploadStatus.uploaded
+          ? 100
+          : nextProgress,
       backendStatusLabel: deliveryStatus,
       isSeeded: active.isSeeded,
     );
@@ -520,11 +519,14 @@ class PolriBackendApi implements BackendGateway {
     );
   }
 
-  Future<void> _saveThreadFallback(Map<String, List<ChatMessage>> threads) async {
+  Future<void> _saveThreadFallback(
+    Map<String, List<ChatMessage>> threads,
+  ) async {
     final prefs = await SharedPreferences.getInstance();
     final encoded = jsonEncode(
       threads.map(
-        (key, value) => MapEntry(key, value.map((item) => item.toJson()).toList()),
+        (key, value) =>
+            MapEntry(key, value.map((item) => item.toJson()).toList()),
       ),
     );
     await prefs.setString(_chatFallbackKey, encoded);

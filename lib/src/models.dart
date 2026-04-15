@@ -1,21 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-enum BodyWornTab {
-  home,
-  record,
-  map,
-  ptt,
-  gallery,
-  report,
-}
+enum BodyWornTab { home, record, map, ptt, gallery, report }
 
-enum RecordingUploadStatus {
-  uploaded,
-  pending,
-  syncing,
-  failed,
-}
+enum RecordingUploadStatus { uploaded, pending, syncing, failed }
 
 class OfficerSession {
   const OfficerSession({
@@ -54,7 +42,8 @@ class PermissionSummary {
     return PermissionSummary(
       cameraGranted: statuses[Permission.camera]?.isGranted ?? false,
       microphoneGranted: statuses[Permission.microphone]?.isGranted ?? false,
-      locationGranted: statuses[Permission.locationWhenInUse]?.isGranted ?? false,
+      locationGranted:
+          statuses[Permission.locationWhenInUse]?.isGranted ?? false,
     );
   }
 }
@@ -136,7 +125,8 @@ class RecordingEntry {
       status: RecordingUploadStatus.values.byName(json['status'] as String),
       durationSeconds: json['durationSeconds'] as int? ?? 0,
       sizeBytes: json['sizeBytes'] as int? ?? 0,
-      locationLabel: json['locationLabel'] as String? ?? 'Lokasi tidak tersedia',
+      locationLabel:
+          json['locationLabel'] as String? ?? 'Lokasi tidak tersedia',
       tagLabel: json['tagLabel'] as String? ?? 'Lainnya',
       relatedToCase: json['relatedToCase'] as bool? ?? false,
       syncProgress: json['syncProgress'] as int? ?? 0,
@@ -180,11 +170,7 @@ class ChatMessage {
   final String timeLabel;
 
   Map<String, dynamic> toJson() {
-    return {
-      'fromMe': fromMe,
-      'text': text,
-      'timeLabel': timeLabel,
-    };
+    return {'fromMe': fromMe, 'text': text, 'timeLabel': timeLabel};
   }
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
@@ -238,7 +224,8 @@ class IncidentReport {
       witness: json['witness'] as String? ?? '',
       recordingId: json['recordingId'] as String? ?? '',
       recordedAtIso: json['recordedAtIso'] as String? ?? '',
-      locationLabel: json['locationLabel'] as String? ?? 'Lokasi tidak tersedia',
+      locationLabel:
+          json['locationLabel'] as String? ?? 'Lokasi tidak tersedia',
       deliveryStatus: json['deliveryStatus'] as String? ?? 'Terkirim',
     );
   }
@@ -305,7 +292,8 @@ class SosAlert {
       channelId: json['channelId'] as String? ?? '',
       status: json['status'] as String? ?? 'new',
       triggeredAtIso: json['triggeredAtIso'] as String? ?? '',
-      locationLabel: json['locationLabel'] as String? ?? 'Lokasi tidak tersedia',
+      locationLabel:
+          json['locationLabel'] as String? ?? 'Lokasi tidak tersedia',
       source: json['source'] as String? ?? 'app',
       latitude: (json['latitude'] as num?)?.toDouble(),
       longitude: (json['longitude'] as num?)?.toDouble(),
@@ -467,7 +455,8 @@ class LiveStreamSession {
       deviceId: json['deviceId'] as String? ?? '',
       status: json['status'] as String? ?? 'idle',
       startedAtIso: json['startedAtIso'] as String? ?? '',
-      locationLabel: json['locationLabel'] as String? ?? 'Lokasi tidak tersedia',
+      locationLabel:
+          json['locationLabel'] as String? ?? 'Lokasi tidak tersedia',
       tagLabel: json['tagLabel'] as String? ?? 'Lainnya',
       channelId: json['channelId'] as String? ?? '',
       latitude: (json['latitude'] as num?)?.toDouble(),
