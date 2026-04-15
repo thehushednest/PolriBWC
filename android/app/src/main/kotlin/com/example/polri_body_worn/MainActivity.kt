@@ -82,11 +82,12 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                 }
 
                 "configurePttAudio" -> {
-                    val url = call.argument<String>("url") ?: ""
+                    val host = call.argument<String>("host") ?: ""
+                    val port = call.argument<Int>("port") ?: 8788
                     val username = call.argument<String>("username") ?: ""
                     val channelId = call.argument<String>("channelId") ?: "ch3"
                     val deviceId = call.argument<String>("deviceId") ?: ""
-                    pttAudioBridge.connect(url, username, channelId, deviceId)
+                    pttAudioBridge.connect(host, port, username, channelId, deviceId)
                     result.success(true)
                 }
 

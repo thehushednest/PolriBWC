@@ -14,16 +14,16 @@ import android.media.audiofx.NoiseSuppressor
 import android.os.Build
 import android.util.Base64
 import android.util.Log
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
 import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.BufferedWriter
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.util.Timer
 import java.util.TimerTask
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -33,12 +33,10 @@ class PttAudioBridge(
 ) {
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private val playbackExecutor = Executors.newSingleThreadExecutor()
-    private val httpClient = OkHttpClient.Builder()
-        .pingInterval(5, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
-        .build()
 
-    private var webSocket: WebSocket? = null
+    private var tcpSocket: Socket? = null
+    private var socketWriter: BufferedWriter? = null
+    private var socketReaderThread: Thread? = null
     private var recorderThread: Thread? = null
     private var reconnectTimer: Timer? = null
     private var audioRecord: AudioRecord? = null
@@ -46,7 +44,10 @@ class PttAudioBridge(
     private var isManualDisconnect = false
 
     @Volatile
-    private var socketUrl: String = ""
+    private var socketHost: String = ""
+
+    @Volatile
+    private var socketPort: Int = 0
 
     @Volatile
     private var username: String = ""
@@ -70,6 +71,7 @@ class PttAudioBridge(
 
     private companion object {
         const val TAG = "PolriPtt"
+        const val CONNECT_TIMEOUT_MS = 3000
     }
 
     private val sampleRate = 16000
@@ -77,29 +79,23 @@ class PttAudioBridge(
     private val channelOutConfig = AudioFormat.CHANNEL_OUT_MONO
     private val audioEncoding = AudioFormat.ENCODING_PCM_16BIT
     private val frameBytes = 640
-
-    // Ambang error baru: hanya laporkan ke Flutter kalau gagal kirim >=25 frame
-    // berturut-turut (~500 ms @ 20 ms/frame). Di bawah itu dianggap jitter
-    // sementara dan socket dibiarkan reconnect otomatis.
     private val sendFailureThreshold = 25
-
-    // Waktu tunggu maksimum agar socket terbuka sebelum mic mulai merekam.
     private val startTalkingSocketWaitMs = 500L
 
     fun connect(
-        url: String,
+        host: String,
+        port: Int,
         username: String,
         channelId: String,
         deviceId: String,
     ) {
-        socketUrl = url
+        socketHost = host
+        socketPort = port
         this.username = username
         this.channelId = channelId
         this.deviceId = deviceId
         isManualDisconnect = false
-        emitState("connecting", detail = "Menghubungkan audio PTT…")
-        // Receiver-only path: jangan ubah audio mode/speakerphone agar RX
-        // tetap pakai STREAM_MUSIC (audible) dan tidak mengganggu call aktif.
+        emitState("connecting", detail = "Menghubungkan audio PTT TCP…")
         ensureMediaVolumeAudible()
         connectInternal()
     }
@@ -121,7 +117,7 @@ class PttAudioBridge(
                     reportOnFailure = true,
                 )
                 if (sent) {
-                    emitState("connected", detail = "Join PTT terkirim ke $channelId.")
+                    emitState("connected", detail = "Join PTT TCP terkirim ke $channelId.")
                 }
             }
         }
@@ -129,18 +125,13 @@ class PttAudioBridge(
 
     fun startTalking(): Boolean {
         if (isCapturing.get()) return true
-        if (socketUrl.isBlank()) {
-            emitError("Audio PTT belum dikonfigurasi.")
+        if (socketHost.isBlank() || socketPort <= 0) {
+            emitError("Audio PTT TCP belum dikonfigurasi.")
             return false
         }
-        // Hanya saat TX kita paksa mode komunikasi & speakerphone agar mic &
-        // loopback monitor berjalan optimal.
         configureCommunicationAudioRouting()
         connectInternal()
 
-        // Tunggu socket sebentar agar frame awal tidak hilang. Kalau socket
-        // belum juga terbuka kita tetap jalan (recorder akan buffering
-        // sebentar di loop utama).
         val waitUntil = System.currentTimeMillis() + startTalkingSocketWaitMs
         while (!isSocketOpen && System.currentTimeMillis() < waitUntil) {
             try {
@@ -176,6 +167,7 @@ class PttAudioBridge(
             emitError("Mikrofon PTT belum siap dipakai.")
             return false
         }
+
         isCapturing.set(true)
         consecutiveSendFailures.set(0)
         audioRecord = record
@@ -192,14 +184,12 @@ class PttAudioBridge(
             emitError("Gagal memulai rekam mikrofon PTT.")
             return false
         }
-        emitState("recording", detail = "Mikrofon PTT aktif.")
+        emitState("recording", detail = "Mikrofon PTT aktif via TCP.")
 
         recorderThread = Thread {
             val readBuffer = ByteArray(frameBytes)
             while (isCapturing.get()) {
                 if (!isSocketOpen) {
-                    // Socket sedang putus: picu reconnect, tapi tetap kuras
-                    // buffer mic supaya tidak menumpuk jadi latency.
                     connectInternal()
                     try {
                         record.read(readBuffer, 0, readBuffer.size)
@@ -212,7 +202,7 @@ class PttAudioBridge(
                     }
                     emitState(
                         "reconnecting",
-                        detail = "Socket audio PTT reconnect, frame di-buffer…",
+                        detail = "Socket TCP PTT reconnect, frame di-buffer…",
                     )
                     continue
                 }
@@ -241,9 +231,7 @@ class PttAudioBridge(
                     } else {
                         val fails = consecutiveSendFailures.incrementAndGet()
                         if (fails == sendFailureThreshold) {
-                            // Laporkan sekali saja ketika benar-benar macet,
-                            // jangan dipicu per-paket.
-                            emitError("Paket audio PTT gagal dikirim ke relay.")
+                            emitError("Paket audio PTT gagal dikirim ke relay TCP.")
                         }
                     }
                 }
@@ -268,8 +256,6 @@ class PttAudioBridge(
         }
         audioRecord = null
         recorderThread = null
-        // Kembalikan mode audio ke NORMAL agar RX playback via STREAM_MUSIC
-        // tidak terkena efek routing mode komunikasi pada device tertentu.
         resetAudioRouting()
         emitState(
             if (isSocketOpen) "connected" else "disconnected",
@@ -284,105 +270,109 @@ class PttAudioBridge(
         closeSocketOnly()
         releasePlayback()
         resetAudioRouting()
-        emitState("disconnected", detail = "Audio PTT dimatikan.")
+        emitState("disconnected", detail = "Audio PTT TCP dimatikan.")
     }
 
     private fun connectInternal() {
-        if (socketUrl.isBlank() || isConnecting.get() || isSocketOpen) return
+        if (socketHost.isBlank() || socketPort <= 0 || isConnecting.get() || isSocketOpen) return
         isConnecting.set(true)
-        emitState("connecting", detail = "Menghubungkan socket audio PTT…")
+        emitState("connecting", detail = "Menghubungkan socket TCP PTT…")
         ioExecutor.execute {
             val generation = socketGeneration.incrementAndGet()
             try {
                 closeSocketOnly()
-                val request = Request.Builder().url(socketUrl).build()
-                httpClient.newWebSocket(request, object : WebSocketListener() {
-                    override fun onOpen(webSocket: WebSocket, response: Response) {
-                        if (generation != socketGeneration.get()) {
-                            try {
-                                webSocket.close(1000, "stale")
-                            } catch (_: Exception) {
-                            }
-                            return
-                        }
-                        this@PttAudioBridge.webSocket = webSocket
-                        isSocketOpen = true
-                        isConnecting.set(false)
-                        consecutiveSendFailures.set(0)
-                        stopReconnect()
-                        // Saat onOpen, kita hanya RX (atau belum tahu) — jangan
-                        // paksa mode komunikasi. Cukup pastikan media volume
-                        // audible dan siapkan AudioTrack lewat STREAM_MUSIC.
-                        if (isCapturing.get()) {
-                            configureCommunicationAudioRouting()
-                        } else {
-                            ensureMediaVolumeAudible()
-                        }
-                        ensureAudioTrack()
-                        emitState("connected", detail = "Socket audio PTT terhubung, menyiapkan hello.")
-                        val sent = sendJson(
-                            mapOf(
-                                "type" to "hello",
-                                "username" to username,
-                                "channelId" to channelId,
-                                "deviceId" to deviceId,
-                            ),
-                            "hello",
-                            reportOnFailure = true,
-                        )
-                        if (sent) {
-                            emitState(
-                                if (isCapturing.get()) "recording" else "connected",
-                                detail = "Hello PTT terkirim.",
-                            )
-                        }
-                    }
+                val socket = Socket()
+                socket.tcpNoDelay = true
+                socket.keepAlive = true
+                socket.connect(InetSocketAddress(socketHost, socketPort), CONNECT_TIMEOUT_MS)
+                val writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8))
+                val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
 
-                    override fun onMessage(webSocket: WebSocket, text: String) {
-                        if (generation != socketGeneration.get()) return
-                        handleIncoming(text)
+                if (generation != socketGeneration.get()) {
+                    try {
+                        writer.close()
+                    } catch (_: Exception) {
                     }
+                    try {
+                        socket.close()
+                    } catch (_: Exception) {
+                    }
+                    return@execute
+                }
 
-                    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                        if (generation != socketGeneration.get()) return
-                        clearSocketReference(webSocket)
-                        isConnecting.set(false)
-                        val reason = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
-                        // Saat sedang transmit, ini jitter sementara -> emit
-                        // `reconnecting` supaya Flutter tidak reset _isTalking.
-                        val state = if (isCapturing.get()) "reconnecting" else "disconnected"
-                        emitState(state, detail = "Socket audio PTT gagal: $reason")
-                        if (!isManualDisconnect) {
-                            scheduleReconnect()
-                        }
-                    }
+                tcpSocket = socket
+                socketWriter = writer
+                isSocketOpen = true
+                isConnecting.set(false)
+                consecutiveSendFailures.set(0)
+                stopReconnect()
 
-                    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                        if (generation != socketGeneration.get()) return
-                        clearSocketReference(webSocket)
-                        isConnecting.set(false)
-                        val detail = if (reason.isBlank()) {
-                            "Socket audio PTT ditutup. code=$code"
-                        } else {
-                            "Socket audio PTT ditutup. code=$code reason=$reason"
+                if (isCapturing.get()) {
+                    configureCommunicationAudioRouting()
+                } else {
+                    ensureMediaVolumeAudible()
+                }
+                ensureAudioTrack()
+                emitState("connected", detail = "Socket TCP PTT terhubung, menyiapkan hello.")
+                val sent = sendJson(
+                    mapOf(
+                        "type" to "hello",
+                        "username" to username,
+                        "channelId" to channelId,
+                        "deviceId" to deviceId,
+                    ),
+                    "hello",
+                    reportOnFailure = true,
+                )
+                if (sent) {
+                    emitState(
+                        if (isCapturing.get()) "recording" else "connected",
+                        detail = "Hello PTT TCP terkirim.",
+                    )
+                }
+
+                socketReaderThread = Thread {
+                    try {
+                        while (generation == socketGeneration.get()) {
+                            val line = reader.readLine() ?: break
+                            handleIncoming(line)
                         }
-                        val state = if (isCapturing.get()) "reconnecting" else "disconnected"
-                        emitState(state, detail = detail)
-                        if (!isManualDisconnect) {
-                            scheduleReconnect()
+                    } catch (e: Exception) {
+                        if (generation == socketGeneration.get()) {
+                            val reason = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+                            handleSocketClosed(generation, "Socket TCP PTT gagal: $reason")
+                        }
+                    } finally {
+                        if (generation == socketGeneration.get()) {
+                            handleSocketClosed(generation, "Socket TCP PTT ditutup oleh relay.")
                         }
                     }
-                })
-            } catch (_: Exception) {
+                }.apply {
+                    name = "polri-bwc-ptt-tcp-read"
+                    start()
+                }
+            } catch (e: Exception) {
                 isSocketOpen = false
                 isConnecting.set(false)
                 closeSocketOnly()
+                val reason = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
                 val state = if (isCapturing.get()) "reconnecting" else "disconnected"
-                emitState(state, detail = "Socket audio PTT gagal dibuat saat inisialisasi.")
+                emitState(state, detail = "Socket TCP PTT gagal dibuat: $reason")
                 if (!isManualDisconnect) {
                     scheduleReconnect()
                 }
             }
+        }
+    }
+
+    private fun handleSocketClosed(generation: Int, detail: String) {
+        if (generation != socketGeneration.get()) return
+        clearSocketReference()
+        isConnecting.set(false)
+        val state = if (isCapturing.get()) "reconnecting" else "disconnected"
+        emitState(state, detail = detail)
+        if (!isManualDisconnect) {
+            scheduleReconnect()
         }
     }
 
@@ -404,8 +394,6 @@ class PttAudioBridge(
                     val payload = json.optString("payload")
                     if (payload.isBlank()) return
                     val bytes = Base64.decode(payload, Base64.DEFAULT)
-                    // Offload tulis ke AudioTrack ke thread tersendiri supaya
-                    // listener OkHttp tidak terblok saat buffer speaker penuh.
                     playbackExecutor.execute {
                         ensureAudioTrack()
                         val track = audioTrack
@@ -416,13 +404,12 @@ class PttAudioBridge(
                         try {
                             val written = track.write(bytes, 0, bytes.size)
                             rxPacketCount++
-                            if (rxPacketCount == 1 || rxPacketCount % 50 == 0) {
+                            if (rxPacketCount == 1L || rxPacketCount % 50L == 0L) {
                                 Log.d(
                                     TAG,
                                     "rx#$rxPacketCount from=$from bytes=${bytes.size} written=$written state=${track.playState}",
                                 )
                             }
-                            // Safety net: pastikan track sedang playing.
                             if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
                                 try {
                                     track.play()
@@ -435,9 +422,6 @@ class PttAudioBridge(
                     }
                 }
                 "floor_lost" -> {
-                    // Server memberitahu bahwa officer ini tidak lagi floor
-                    // holder (mis. session dibersihkan karena presence stale).
-                    // Hentikan capture supaya tidak spam paket yang pasti di-drop.
                     if (isCapturing.get()) {
                         emitError("Floor PTT hilang di server. Silakan tekan ulang PTT.")
                     }
@@ -457,9 +441,6 @@ class PttAudioBridge(
             return
         }
         val bufferBytes = maxOf(minBuffer * 2, frameBytes * 8)
-        // USAGE_MEDIA -> STREAM_MUSIC supaya RX mengikuti media volume (selalu
-        // audible) dan tidak bergantung MODE_IN_COMMUNICATION / STREAM_VOICE_CALL
-        // yang seringkali senyap pada receiver.
         val preferredSpeaker = findBuiltInSpeaker()
         val track = try {
             AudioTrack.Builder()
@@ -524,8 +505,6 @@ class PttAudioBridge(
             val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
             val current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
             if (current < max / 2) {
-                // Jangan paksa full supaya tidak kaget; cukup naikkan ke setengah
-                // bila terlalu pelan.
                 audioManager.setStreamVolume(
                     AudioManager.STREAM_MUSIC,
                     max / 2,
@@ -599,7 +578,9 @@ class PttAudioBridge(
     }
 
     private fun scheduleReconnect() {
-        if (isManualDisconnect || reconnectTimer != null || socketUrl.isBlank()) return
+        if (isManualDisconnect || reconnectTimer != null || socketHost.isBlank() || socketPort <= 0) {
+            return
+        }
         reconnectTimer = Timer("polri-bwc-ptt-reconnect", true).apply {
             schedule(
                 object : TimerTask() {
@@ -633,28 +614,20 @@ class PttAudioBridge(
         label: String,
         reportOnFailure: Boolean,
     ): Boolean {
-        val currentSocket = webSocket ?: return false
+        val writer = socketWriter ?: return false
         try {
-            val sent = currentSocket.send(JSONObject(payload).toString())
-            if (!sent) {
-                clearSocketReference(currentSocket)
-                if (!isManualDisconnect) {
-                    scheduleReconnect()
-                }
-                if (reportOnFailure) {
-                    val state = if (isCapturing.get()) "reconnecting" else "disconnected"
-                    emitState(state, detail = "Gagal mengirim $label ke relay.")
-                }
-            }
-            return sent
+            writer.write(JSONObject(payload).toString())
+            writer.newLine()
+            writer.flush()
+            return true
         } catch (_: Exception) {
-            closeSocketOnly()
+            clearSocketReference()
             if (!isManualDisconnect) {
                 scheduleReconnect()
             }
             if (reportOnFailure) {
                 val state = if (isCapturing.get()) "reconnecting" else "disconnected"
-                emitState(state, detail = "Gagal mengirim $label ke relay.")
+                emitState(state, detail = "Gagal mengirim $label ke relay TCP.")
             }
             return false
         }
@@ -662,17 +635,35 @@ class PttAudioBridge(
 
     private fun closeSocketOnly() {
         try {
-            webSocket?.close(1000, "normal")
+            socketWriter?.close()
         } catch (_: Exception) {
         }
-        webSocket = null
+        try {
+            tcpSocket?.close()
+        } catch (_: Exception) {
+        }
+        try {
+            socketReaderThread?.interrupt()
+        } catch (_: Exception) {
+        }
+        socketWriter = null
+        tcpSocket = null
+        socketReaderThread = null
         isSocketOpen = false
     }
 
-    private fun clearSocketReference(socket: WebSocket) {
-        if (webSocket === socket) {
-            webSocket = null
+    private fun clearSocketReference() {
+        try {
+            socketWriter?.close()
+        } catch (_: Exception) {
         }
+        try {
+            tcpSocket?.close()
+        } catch (_: Exception) {
+        }
+        socketWriter = null
+        tcpSocket = null
+        socketReaderThread = null
         isSocketOpen = false
     }
 
