@@ -47,3 +47,9 @@ desktop/dist/
 - devtools dimatikan default
 - akses mikrofon dashboard diizinkan agar PTT dua arah tetap berjalan
 - hanya mengizinkan navigasi internal pada origin dashboard yang sama
+- top bar command center internal dengan tombol:
+  - `Refresh`
+  - `Layar Penuh`
+  - `Minimize`
+  - `Tutup`
+- branding command center langsung muncul di dalam app, bukan UI browser
