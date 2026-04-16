@@ -306,6 +306,14 @@ html,body{height:100%;overflow:hidden;
   box-shadow:0 10px 20px rgba(114,184,255,.14)
 }
 .ptt-channel-btn:hover{transform:translateY(-1px);border-color:#b7d2ed}
+.ptt-channel-btn small{
+  display:block;
+  margin-top:4px;
+  font-size:9px;
+  color:#7d97b7;
+  font-weight:700;
+}
+.ptt-channel-btn.active small{color:#4877ab}
 .ptt-console-actions{
   display:grid;
   grid-template-columns:minmax(0,1.08fr) minmax(148px,.92fr);
@@ -355,6 +363,97 @@ html,body{height:100%;overflow:hidden;
   font-size:10px;
   color:#88a0bf;
   line-height:1.55
+}
+.ptt-channel-roster{
+  padding:11px 12px;
+  border-radius:14px;
+  border:1px solid var(--border);
+  background:linear-gradient(180deg,#fbfdff,#f3f8ff);
+}
+.ptt-channel-roster-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:10px;
+}
+.ptt-channel-roster-title{
+  font-size:10px;
+  font-weight:800;
+  letter-spacing:.05em;
+  text-transform:uppercase;
+  color:#6883a5;
+}
+.ptt-channel-roster-count{
+  padding:5px 8px;
+  border-radius:999px;
+  background:#fff;
+  border:1px solid var(--border);
+  font-size:10px;
+  font-weight:800;
+  color:#365b87;
+}
+.ptt-channel-roster-list{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+}
+.ptt-channel-member{
+  min-width:0;
+  padding:8px 10px;
+  border-radius:12px;
+  background:#fff;
+  border:1px solid #dbe8f5;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex:1 1 calc(50% - 8px);
+}
+.ptt-channel-member-avatar{
+  width:28px;
+  height:28px;
+  border-radius:9px;
+  background:linear-gradient(135deg,#244b78,#153152);
+  color:#fff;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size:10px;
+  font-weight:900;
+  flex-shrink:0;
+}
+.ptt-channel-member-text{
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+}
+.ptt-channel-member-name{
+  font-size:11px;
+  font-weight:800;
+  color:#17365d;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.ptt-channel-member-meta{
+  font-size:9px;
+  color:#829ab8;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.ptt-channel-member.live{
+  border-color:rgba(240,64,64,.22);
+  background:linear-gradient(180deg,#fff7f7,#fff);
+}
+.ptt-channel-member.live .ptt-channel-member-avatar{
+  background:linear-gradient(135deg,#cb2626,#8a0d0d);
+}
+.ptt-channel-roster-empty{
+  font-size:10px;
+  color:#8aa0bc;
+  line-height:1.5;
 }
 
 /* â”€â”€ FEED CARDS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -704,6 +803,15 @@ html,body{height:100%;overflow:hidden;
         <button class="ptt-talk-btn" id="ptt-talk-btn" type="button">Tekan untuk Bicara</button>
       </div>
       <div class="ptt-console-note" id="ptt-console-note">Browser akan meminta akses mikrofon saat pertama kali mengudara.</div>
+      <div class="ptt-channel-roster">
+        <div class="ptt-channel-roster-head">
+          <div class="ptt-channel-roster-title">Personel di Channel</div>
+          <div class="ptt-channel-roster-count" id="ptt-channel-roster-count">0 personel</div>
+        </div>
+        <div class="ptt-channel-roster-list" id="ptt-channel-roster-list">
+          <div class="ptt-channel-roster-empty">Belum ada personel yang bergabung ke channel ini.</div>
+        </div>
+      </div>
     </div>
     <div class="tab-bar">
       <button class="tab-btn active" onclick="openTab('ptt',this)">
@@ -880,6 +988,54 @@ function updatePttConsoleUi(detail = '') {
     : 'Browser menerima audio PTT realtime sesuai channel yang dipilih.');
 }
 
+function renderPttChannelRoster() {
+  const rosterEl = document.getElementById('ptt-channel-roster-list');
+  const countEl = document.getElementById('ptt-channel-roster-count');
+  if (!rosterEl || !countEl) return;
+
+  const groupedCounts = { ch1: 0, ch2: 0, ch3: 0, ch4: 0 };
+  allPresence.forEach(entry => {
+    const channelId = (entry.activeChannelId || '').toLowerCase();
+    if (groupedCounts[channelId] !== undefined) groupedCounts[channelId] += 1;
+  });
+
+  document.querySelectorAll('[data-ptt-channel]').forEach(btn => {
+    const channelId = btn.dataset.pttChannel || 'ch1';
+    const count = groupedCounts[channelId] || 0;
+    btn.innerHTML = `${channelId.toUpperCase()}<small>${count} personel</small>`;
+  });
+
+  const members = allPresence
+    .filter(entry => (entry.activeChannelId || '').toLowerCase() === pttChannel)
+    .sort((a, b) => {
+      const rank = item => item.isTalking ? 0 : item.resolvedStatus === 'online' ? 1 : 2;
+      return rank(a) - rank(b) || (a.username || '').localeCompare(b.username || '');
+    });
+
+  countEl.textContent = `${members.length} personel`;
+
+  if (!members.length) {
+    rosterEl.innerHTML = `<div class="ptt-channel-roster-empty">Belum ada personel yang bergabung ke ${pttChannel.toUpperCase()}.</div>`;
+    return;
+  }
+
+  rosterEl.innerHTML = members.map(entry => {
+    const statusText = entry.isTalking
+      ? 'Sedang TX'
+      : entry.resolvedStatus === 'online'
+      ? 'Online'
+      : 'Offline';
+    const deviceText = entry.deviceId || 'Perangkat';
+    return `<div class="ptt-channel-member ${entry.isTalking ? 'live' : ''}">
+      <div class="ptt-channel-member-avatar">${initials(entry.username)}</div>
+      <div class="ptt-channel-member-text">
+        <div class="ptt-channel-member-name">${entry.username || '-'}</div>
+        <div class="ptt-channel-member-meta">${statusText} · ${deviceText}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
 async function ensurePttLocalAudio() {
   if (pttLocalTrack && pttLocalStream) {
     pttLocalTrack.enabled = pttTalking;
@@ -1052,6 +1208,7 @@ async function joinPttChannel(channelId) {
   } else {
     connectPttSocket();
   }
+  renderPttChannelRoster();
   updatePttConsoleUi(`Channel dashboard dipindah ke ${pttChannel.toUpperCase()}.`);
 }
 
@@ -1522,6 +1679,7 @@ async function loadPresence() {
 
     renderOfficerList();
     renderMarkers();
+    renderPttChannelRoster();
   } catch(_) {}
 }
 
