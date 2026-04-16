@@ -10,6 +10,20 @@ typedef PttErrorCallback = void Function(String message);
 class PttWebRtcService {
   PttWebRtcService({required this.onState, required this.onError});
 
+  static const List<Map<String, dynamic>> _iceServers = [
+    {
+      'urls': [
+        'stun:stun.l.google.com:19302',
+        'stun:stun1.l.google.com:19302',
+        'stun:turn.asksenopati.com:3478',
+        'turn:turn.asksenopati.com:3478?transport=udp',
+        'turn:turn.asksenopati.com:3478?transport=tcp',
+      ],
+      'username': 'polribwc',
+      'credential': 'TurnPtt2026Aman',
+    },
+  ];
+
   final PttStateCallback onState;
   final PttErrorCallback onError;
 
@@ -274,14 +288,7 @@ class PttWebRtcService {
       return;
     }
     final pc = await createPeerConnection({
-      'iceServers': [
-        {
-          'urls': [
-            'stun:stun.l.google.com:19302',
-            'stun:stun1.l.google.com:19302',
-          ],
-        },
-      ],
+      'iceServers': _iceServers,
       'sdpSemantics': 'unified-plan',
     });
     final pttPeer = _PttPeer(

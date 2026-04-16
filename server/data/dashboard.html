@@ -306,15 +306,43 @@ html,body{height:100%;overflow:hidden;
   box-shadow:0 10px 20px rgba(114,184,255,.14)
 }
 .ptt-channel-btn:hover{transform:translateY(-1px);border-color:#b7d2ed}
-.ptt-console-actions{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center}
+.ptt-console-actions{
+  display:grid;
+  grid-template-columns:minmax(0,1.08fr) minmax(148px,.92fr);
+  gap:10px;
+  align-items:stretch
+}
 .ptt-monitor-chip{
-  padding:11px 12px;border-radius:14px;border:1px solid var(--border);
-  background:#fff;font-size:11px;color:#4c6b8c;font-weight:700
+  min-height:54px;
+  padding:12px 13px;
+  border-radius:14px;
+  border:1px solid var(--border);
+  background:#fff;
+  font-size:11px;
+  line-height:1.45;
+  color:#4c6b8c;
+  font-weight:700;
+  display:flex;
+  align-items:center
 }
 .ptt-talk-btn{
-  min-width:132px;height:46px;border:none;border-radius:16px;
-  background:linear-gradient(135deg,#c42020,#8a0d0d);color:#fff;
-  font-size:12px;font-weight:900;letter-spacing:.04em;cursor:pointer;
+  width:100%;
+  min-width:0;
+  min-height:54px;
+  padding:12px 18px;
+  border:none;
+  border-radius:16px;
+  background:linear-gradient(135deg,#c42020,#8a0d0d);
+  color:#fff;
+  font-size:12px;
+  font-weight:900;
+  line-height:1.2;
+  letter-spacing:.02em;
+  text-align:center;
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  justify-content:center;
   box-shadow:0 14px 24px rgba(196,32,32,.22);
   transition:transform .15s ease, box-shadow .15s ease, filter .15s ease
 }
@@ -322,7 +350,12 @@ html,body{height:100%;overflow:hidden;
 .ptt-talk-btn:disabled{cursor:not-allowed;filter:grayscale(.2);opacity:.65;box-shadow:none}
 .ptt-talk-btn.live{animation:pttDashPulse 1s ease-in-out infinite}
 @keyframes pttDashPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.02)}}
-.ptt-console-note{font-size:10px;color:var(--dim);line-height:1.6}
+.ptt-console-note{
+  min-height:18px;
+  font-size:10px;
+  color:#88a0bf;
+  line-height:1.55
+}
 
 /* â”€â”€ FEED CARDS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .feed-card{
