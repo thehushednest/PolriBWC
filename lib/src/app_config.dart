@@ -19,7 +19,7 @@ class AppConfig {
     return AppConfig(
       apiBaseUrl: const String.fromEnvironment(
         'POLRI_BWC_API_BASE_URL',
-        defaultValue: 'https://asksenopati.com/polribwc',
+        defaultValue: 'https://polribwc.asksenopati.com',
       ),
       apiVersion: const String.fromEnvironment(
         'POLRI_BWC_API_VERSION',
