@@ -22,6 +22,8 @@ const _dashboardAdminUsername = 'admin';
 const _dashboardAdminPassword = 'admin';
 const _dashboardAdminPhoneDisplay = '08131850060';
 const _dashboardAdminPhoneWhatsApp = '628131850060';
+const _dashboardPttOfficerId = 'dashboard_admin';
+const _dashboardPttDeviceId = 'dashboard_console';
 const _dashboardOtpHttpBaseUrl = 'http://127.0.0.1:8030';
 const _dashboardOtpHttpBearerToken =
     'f7a10e21ab3b9af1024aae4930007d721e9d18e4771c2f3b90ba581f62dca0aa';
@@ -266,6 +268,109 @@ Future<void> _handleRequest(
       response.write(await htmlFile.readAsString());
       await response.close();
       return;
+    }
+
+    if (method == 'POST' && path == '/dashboard/api/ptt/transmit/start') {
+      if (!_isDashboardAuthorized(request, dashboardAuth)) {
+        return _rejectDashboardUnauthorized(response);
+      }
+      final body = await _readJson(request);
+      final channelId = body['channelId'] as String? ?? 'ch1';
+      store.state = _cleanupStalePttSessions(store.state);
+      final activeSession = _activeSessionForChannel(store.state, channelId);
+      if (activeSession != null) {
+        final currentHolder = activeSession['officerId'] as String? ?? '';
+        if (currentHolder == _dashboardPttOfficerId) {
+          return _writeJson(response, {
+            'sessionId': activeSession['sessionId'],
+            'status': 'talking',
+            'channelId': channelId,
+            'holderOfficerId': currentHolder,
+          });
+        }
+        response.statusCode = HttpStatus.conflict;
+        return _writeJson(response, {
+          'status': 'busy',
+          'channelId': channelId,
+          'holderOfficerId': currentHolder,
+          'sessionId': activeSession['sessionId'],
+        });
+      }
+      final sessionId =
+          'PTT_${DateTime.now().toUtc().toIso8601String().replaceAll(RegExp(r'[-:.TZ]'), '')}';
+      final updatedSessions = {
+        ...store.state.activePttSessions,
+        channelId: {
+          'sessionId': sessionId,
+          'channelId': channelId,
+          'officerId': _dashboardPttOfficerId,
+          'deviceId': _dashboardPttDeviceId,
+          'startedAtIso': DateTime.now().toUtc().toIso8601String(),
+        },
+      };
+      store.state = store.state.copyWith(
+        activePttSession: _primaryActiveSession(updatedSessions),
+        activePttSessions: updatedSessions,
+      );
+      await store.save();
+      _printPresenceSnapshot(store, reason: 'dashboard-ptt-start');
+      return _writeJson(response, {
+        'sessionId': sessionId,
+        'status': 'talking',
+        'channelId': channelId,
+        'holderOfficerId': _dashboardPttOfficerId,
+      });
+    }
+
+    if (method == 'POST' && path == '/dashboard/api/ptt/transmit/stop') {
+      if (!_isDashboardAuthorized(request, dashboardAuth)) {
+        return _rejectDashboardUnauthorized(response);
+      }
+      final body = await _readJson(request);
+      final channelId = body['channelId'] as String? ?? 'ch1';
+      final activeSession = _activeSessionForChannel(store.state, channelId);
+      if (activeSession == null) {
+        return _writeJson(response, {'status': 'idle', 'channelId': channelId});
+      }
+      final holderOfficerId = activeSession['officerId'] as String? ?? '';
+      if (holderOfficerId != _dashboardPttOfficerId) {
+        response.statusCode = HttpStatus.conflict;
+        return _writeJson(response, {
+          'status': 'ignored',
+          'reason': 'not_floor_holder',
+          'channelId': channelId,
+          'holderOfficerId': holderOfficerId,
+        });
+      }
+      final currentFeed = [
+        ...(store.state.pttFeeds[channelId] ?? const <Map<String, dynamic>>[]),
+      ];
+      currentFeed.insert(0, {
+        'initials': 'CC',
+        'speakerName': 'Command Center',
+        'statusLabel': '${body['durationSeconds'] ?? 0}d',
+        'timeLabel': _clockNow(),
+        'waveLevel': 0.74,
+        'accentColorHex': '#17365D',
+        'isSystem': false,
+      });
+      final updatedFeeds = {
+        ...store.state.pttFeeds,
+        channelId: currentFeed.take(10).toList(),
+      };
+      final updatedSessions = {...store.state.activePttSessions}
+        ..remove(channelId);
+      store.state = store.state.copyWith(
+        activePttSession: _primaryActiveSession(updatedSessions),
+        activePttSessions: updatedSessions,
+        pttFeeds: updatedFeeds,
+      );
+      await store.save();
+      _printPresenceSnapshot(store, reason: 'dashboard-ptt-stop');
+      return _writeJson(response, {
+        'status': 'completed',
+        'channelId': channelId,
+      });
     }
 
     if (method == 'GET' && path == '/api/v1/health') {
@@ -907,6 +1012,22 @@ String _readCookie(HttpRequest request, String name) {
     if (cookie.name == name) return cookie.value;
   }
   return '';
+}
+
+bool _isDashboardAuthorized(
+  HttpRequest request,
+  DashboardAuthManager dashboardAuth,
+) {
+  final token = _readCookie(request, _dashboardSessionCookieName);
+  return dashboardAuth.isValid(token);
+}
+
+Future<void> _rejectDashboardUnauthorized(HttpResponse response) async {
+  response.statusCode = HttpStatus.unauthorized;
+  await _writeJson(response, {
+    'error': 'Sesi dashboard tidak valid. Silakan login ulang.',
+    'code': 'dashboard_session_required',
+  });
 }
 
 String _dashboardBasePath(HttpRequest request) {
@@ -2208,6 +2329,9 @@ class PttWebRtcSignalingRelay {
       onSignal: _relaySignal,
     );
     _clients.add(client);
+    stdout.writeln(
+      '[${_clockNow()}][ptt-signal-connect] ${request.connectionInfo?.remoteAddress.address ?? 'unknown'} client=${client.clientId}',
+    );
     client.start();
   }
 
@@ -2256,6 +2380,9 @@ class PttWebRtcSignalingRelay {
       'channelId': client.channelId,
       'peers': peers,
     });
+    stdout.writeln(
+      '[${_clockNow()}][ptt-signal-join] ${client.username}@${client.channelId} client=${client.clientId} peers=${peers.length}',
+    );
 
     for (final peer in _clients.toList()) {
       if (identical(peer, client)) continue;
@@ -2283,6 +2410,16 @@ class PttWebRtcSignalingRelay {
       }
     }
     if (target == null) return;
+    final rawData = message['data'];
+    final data =
+        rawData is Map
+            ? Map<String, dynamic>.from(rawData.cast<String, dynamic>())
+            : null;
+    final kind = data?['kind'] as String? ?? 'unknown';
+    final signalType = data?['type'] as String? ?? '';
+    stdout.writeln(
+      '[${_clockNow()}][ptt-signal-relay] ${sender.username}@${sender.channelId} -> ${target.clientId} kind=$kind ${signalType.isEmpty ? '' : 'type=$signalType'}',
+    );
     target.send({
       'type': 'signal',
       'fromClientId': sender.clientId,
@@ -2294,6 +2431,9 @@ class PttWebRtcSignalingRelay {
 
   void _removeClient(_PttSignalingClient client) {
     _clients.remove(client);
+    stdout.writeln(
+      '[${_clockNow()}][ptt-signal-disconnect] ${client.username.isEmpty ? 'unknown' : client.username}@${client.channelId} client=${client.clientId}',
+    );
     for (final peer in _clients.toList()) {
       if (peer.channelId != client.channelId) continue;
       peer.send({

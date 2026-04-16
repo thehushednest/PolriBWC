@@ -279,6 +279,51 @@ html,body{height:100%;overflow:hidden;
   color:#31557f;background:#eef6ff;border:1px solid var(--border)}
 .tab-empty-icon::before{content:'ACT';font-size:11px}
 
+.ptt-console{
+  padding:16px;
+  border-bottom:1px solid var(--border);
+  background:linear-gradient(180deg,#ffffff,#f6faff);
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+}
+.ptt-console-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.ptt-console-title{font-size:13px;font-weight:800;color:var(--text);text-transform:uppercase;letter-spacing:.06em}
+.ptt-console-sub{margin-top:4px;font-size:11px;color:var(--muted);line-height:1.5}
+.ptt-console-state{
+  padding:7px 10px;border-radius:999px;border:1px solid var(--border);
+  background:#fff;font-size:10px;font-weight:800;color:#2f5b8b;white-space:nowrap
+}
+.ptt-console-state.live{color:#a52121;border-color:rgba(240,64,64,.22);background:rgba(240,64,64,.08)}
+.ptt-channel-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.ptt-channel-btn{
+  padding:10px 8px;border-radius:12px;border:1px solid var(--border);
+  background:#fff;color:#375a83;font-size:11px;font-weight:800;cursor:pointer;
+  transition:border-color .15s, transform .15s, box-shadow .15s, background .15s
+}
+.ptt-channel-btn.active{
+  border-color:#9dc5ef;background:#eaf4ff;color:#183c67;
+  box-shadow:0 10px 20px rgba(114,184,255,.14)
+}
+.ptt-channel-btn:hover{transform:translateY(-1px);border-color:#b7d2ed}
+.ptt-console-actions{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center}
+.ptt-monitor-chip{
+  padding:11px 12px;border-radius:14px;border:1px solid var(--border);
+  background:#fff;font-size:11px;color:#4c6b8c;font-weight:700
+}
+.ptt-talk-btn{
+  min-width:132px;height:46px;border:none;border-radius:16px;
+  background:linear-gradient(135deg,#c42020,#8a0d0d);color:#fff;
+  font-size:12px;font-weight:900;letter-spacing:.04em;cursor:pointer;
+  box-shadow:0 14px 24px rgba(196,32,32,.22);
+  transition:transform .15s ease, box-shadow .15s ease, filter .15s ease
+}
+.ptt-talk-btn:hover{transform:translateY(-1px);box-shadow:0 18px 28px rgba(196,32,32,.26)}
+.ptt-talk-btn:disabled{cursor:not-allowed;filter:grayscale(.2);opacity:.65;box-shadow:none}
+.ptt-talk-btn.live{animation:pttDashPulse 1s ease-in-out infinite}
+@keyframes pttDashPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.02)}}
+.ptt-console-note{font-size:10px;color:var(--dim);line-height:1.6}
+
 /* â”€â”€ FEED CARDS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .feed-card{
   background:#ffffff;
@@ -607,6 +652,26 @@ html,body{height:100%;overflow:hidden;
 
   <!-- RIGHT: Activity panel -->
   <div class="sidebar-r">
+    <div class="ptt-console">
+      <div class="ptt-console-head">
+        <div>
+          <div class="ptt-console-title">Console PTT</div>
+          <div class="ptt-console-sub">Dashboard bisa monitor audio channel dan mengudara ke perangkat di lapangan.</div>
+        </div>
+        <div class="ptt-console-state" id="ptt-console-state">Menghubungkan</div>
+      </div>
+      <div class="ptt-channel-row">
+        <button class="ptt-channel-btn active" data-ptt-channel="ch1">CH1</button>
+        <button class="ptt-channel-btn" data-ptt-channel="ch2">CH2</button>
+        <button class="ptt-channel-btn" data-ptt-channel="ch3">CH3</button>
+        <button class="ptt-channel-btn" data-ptt-channel="ch4">CH4</button>
+      </div>
+      <div class="ptt-console-actions">
+        <div class="ptt-monitor-chip" id="ptt-monitor-chip">Monitoring CH1 · speaker dashboard standby</div>
+        <button class="ptt-talk-btn" id="ptt-talk-btn" type="button">Tekan untuk Bicara</button>
+      </div>
+      <div class="ptt-console-note" id="ptt-console-note">Browser akan meminta akses mikrofon saat pertama kali mengudara.</div>
+    </div>
     <div class="tab-bar">
       <button class="tab-btn active" onclick="openTab('ptt',this)">
         PTT Log
@@ -653,8 +718,24 @@ const DASHBOARD_LOGOUT_URL = API_BASE + '/dashboard/logout';
 const API = API_BASE + '/api/v1';
 const LIVE_WS = API_BASE.replace(/^http/, 'ws') + '/api/v1/live/ws';
 const LIVE_SIGNAL_WS = API_BASE.replace(/^http/, 'ws') + '/api/v1/live/signal/ws';
+const PTT_SIGNAL_WS = API_BASE.replace(/^http/, 'ws') + '/api/v1/ptt/signal/ws';
+const DASHBOARD_PTT_START_URL = API_BASE + '/dashboard/api/ptt/transmit/start';
+const DASHBOARD_PTT_STOP_URL = API_BASE + '/dashboard/api/ptt/transmit/stop';
 const REFRESH = 8000;
 const DEFAULT_LAT = -6.2088, DEFAULT_LNG = 106.8456;
+const PTT_ICE_SERVERS = [
+  {
+    urls: [
+      'stun:stun.l.google.com:19302',
+      'stun:stun1.l.google.com:19302',
+      'stun:turn.asksenopati.com:3478',
+      'turn:turn.asksenopati.com:3478?transport=udp',
+      'turn:turn.asksenopati.com:3478?transport=tcp',
+    ],
+    username: 'polribwc',
+    credential: 'TurnPtt2026Aman',
+  },
+];
 
 // â”€â”€ MAP INIT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const map = L.map('map', {zoomControl:true, attributionControl:true});
@@ -685,6 +766,18 @@ let liveRenderQueued = false;
 let liveViewerSignalSocket = null;
 let liveViewerPeer = null;
 let liveViewerBroadcasterId = '';
+let pttChannel = 'ch1';
+let pttClientId = '';
+let pttSocket = null;
+let pttReconnectTimer = null;
+let pttLocalStream = null;
+let pttLocalTrack = null;
+let pttTalking = false;
+let pttFloorHeld = false;
+let pttPeers = new Map();
+let pttAudioEls = new Map();
+const pttUsername = 'dashboard_admin';
+const pttDeviceId = 'dashboard_console';
 
 const logoutLink = document.getElementById('logout-link');
 if (logoutLink) logoutLink.href = DASHBOARD_LOGOUT_URL;
@@ -728,6 +821,384 @@ const officerColor = e => {
   if (e.resolvedStatus==='online') return '#2d7ef6';
   return '#2a3a4a';
 };
+
+function updatePttConsoleUi(detail = '') {
+  const stateEl = document.getElementById('ptt-console-state');
+  const chipEl = document.getElementById('ptt-monitor-chip');
+  const noteEl = document.getElementById('ptt-console-note');
+  const talkBtn = document.getElementById('ptt-talk-btn');
+  if (!stateEl || !chipEl || !noteEl || !talkBtn) return;
+
+  const socketOpen = pttSocket && pttSocket.readyState === WebSocket.OPEN;
+  stateEl.textContent = pttTalking
+    ? 'Mengudara'
+    : socketOpen
+    ? `Monitor ${pttChannel.toUpperCase()}`
+    : 'Menyambung ulang';
+  stateEl.classList.toggle('live', pttTalking);
+  chipEl.textContent = pttTalking
+    ? `Transmit ${pttChannel.toUpperCase()} · command center on-air`
+    : `Monitoring ${pttChannel.toUpperCase()} · speaker dashboard standby`;
+  talkBtn.classList.toggle('live', pttTalking);
+  talkBtn.textContent = pttTalking ? 'Lepas untuk Stop' : 'Tekan untuk Bicara';
+  talkBtn.disabled = !socketOpen && !pttTalking;
+  noteEl.textContent = detail || (pttTalking
+    ? 'Floor channel sedang dipegang dashboard command center.'
+    : 'Browser menerima audio PTT realtime sesuai channel yang dipilih.');
+}
+
+async function ensurePttLocalAudio() {
+  if (pttLocalTrack && pttLocalStream) {
+    pttLocalTrack.enabled = pttTalking;
+    return;
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  const [track] = stream.getAudioTracks();
+  if (!track) throw new Error('Track audio dashboard tidak tersedia.');
+  track.enabled = false;
+  pttLocalStream = stream;
+  pttLocalTrack = track;
+}
+
+function pttSend(payload) {
+  if (!pttSocket || pttSocket.readyState !== WebSocket.OPEN) return;
+  pttSocket.send(JSON.stringify(payload));
+}
+
+async function syncPttPeers(peers) {
+  const liveIds = new Set((peers || []).map(peer => peer.clientId || '').filter(Boolean));
+  await Promise.all(Array.from(pttPeers.keys()).map(async clientId => {
+    if (!liveIds.has(clientId)) {
+      await removePttPeer(clientId);
+    }
+  }));
+  await Promise.all((peers || []).map(ensurePttPeer));
+}
+
+async function removePttPeer(clientId) {
+  const peer = pttPeers.get(clientId);
+  if (peer) {
+    try { await peer.close(); } catch(_) {}
+    pttPeers.delete(clientId);
+  }
+  const audioEl = pttAudioEls.get(clientId);
+  if (audioEl) {
+    try {
+      audioEl.srcObject = null;
+      audioEl.remove();
+    } catch(_) {}
+    pttAudioEls.delete(clientId);
+  }
+}
+
+async function closeAllPttPeers() {
+  await Promise.all(Array.from(pttPeers.keys()).map(removePttPeer));
+}
+
+function attachRemotePttStream(clientId, stream) {
+  let audioEl = pttAudioEls.get(clientId);
+  if (!audioEl) {
+    audioEl = document.createElement('audio');
+    audioEl.autoplay = true;
+    audioEl.controls = false;
+    audioEl.playsInline = true;
+    audioEl.dataset.clientId = clientId;
+    audioEl.style.display = 'none';
+    document.body.appendChild(audioEl);
+    pttAudioEls.set(clientId, audioEl);
+  }
+  audioEl.srcObject = stream;
+  audioEl.play().catch(() => {});
+}
+
+async function createDashboardOffer(clientId, pc) {
+  const offer = await pc.createOffer({
+    offerToReceiveAudio: true,
+    offerToReceiveVideo: false,
+  });
+  await pc.setLocalDescription(offer);
+  pttSend({
+    type: 'signal',
+    targetClientId: clientId,
+    data: { kind: 'sdp', type: offer.type, sdp: offer.sdp },
+  });
+}
+
+async function ensurePttPeer(peerInfo) {
+  const clientId = peerInfo.clientId || '';
+  if (!clientId || clientId === pttClientId || pttPeers.has(clientId)) return;
+
+  const pc = new RTCPeerConnection({
+    iceServers: PTT_ICE_SERVERS,
+    sdpSemantics: 'unified-plan',
+  });
+  pttPeers.set(clientId, pc);
+
+  if (pttLocalStream) {
+    pttLocalStream.getAudioTracks().forEach(track => pc.addTrack(track, pttLocalStream));
+  }
+
+  pc.onicecandidate = evt => {
+    if (!evt.candidate) return;
+    pttSend({
+      type: 'signal',
+      targetClientId: clientId,
+      data: { kind: 'candidate', candidate: evt.candidate.toJSON() },
+    });
+  };
+  pc.ontrack = evt => {
+    if (evt.track.kind !== 'audio') return;
+    if (evt.streams && evt.streams[0]) attachRemotePttStream(clientId, evt.streams[0]);
+  };
+  pc.onconnectionstatechange = () => {
+    if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) {
+      removePttPeer(clientId);
+    }
+  };
+
+  if (pttClientId && pttClientId > clientId) {
+    await createDashboardOffer(clientId, pc);
+  }
+}
+
+async function handlePttSignal(fromClientId, data, envelope = {}) {
+  if (!fromClientId || !data) return;
+  if (!pttPeers.has(fromClientId)) {
+    await ensurePttPeer({
+      clientId: fromClientId,
+      username: envelope.fromUsername || '',
+      channelId: envelope.channelId || pttChannel,
+    });
+  }
+  const pc = pttPeers.get(fromClientId);
+  if (!pc) return;
+
+  if (data.kind === 'sdp') {
+    const desc = new RTCSessionDescription({
+      type: data.type || 'offer',
+      sdp: data.sdp || '',
+    });
+    await pc.setRemoteDescription(desc);
+    if (desc.type === 'offer') {
+      const answer = await pc.createAnswer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: false,
+      });
+      await pc.setLocalDescription(answer);
+      pttSend({
+        type: 'signal',
+        targetClientId: fromClientId,
+        data: { kind: 'sdp', type: answer.type, sdp: answer.sdp },
+      });
+    }
+    return;
+  }
+
+  if (data.kind === 'candidate' && data.candidate) {
+    await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+  }
+}
+
+async function joinPttChannel(channelId) {
+  pttChannel = channelId;
+  document.querySelectorAll('[data-ptt-channel]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.pttChannel === channelId);
+  });
+  pttTalking = false;
+  pttFloorHeld = false;
+  window.__pttTalkStartedAt = null;
+  if (pttLocalTrack) pttLocalTrack.enabled = false;
+  await closeAllPttPeers();
+  if (pttSocket && pttSocket.readyState === WebSocket.OPEN) {
+    pttSend({
+      type: 'join',
+      username: pttUsername,
+      channelId: pttChannel,
+      deviceId: pttDeviceId,
+    });
+  } else {
+    connectPttSocket();
+  }
+  updatePttConsoleUi(`Channel dashboard dipindah ke ${pttChannel.toUpperCase()}.`);
+}
+
+function schedulePttReconnect() {
+  if (pttReconnectTimer) return;
+  pttReconnectTimer = setTimeout(() => {
+    pttReconnectTimer = null;
+    connectPttSocket();
+  }, 1500);
+}
+
+async function connectPttSocket() {
+  if (pttSocket && (pttSocket.readyState === WebSocket.OPEN || pttSocket.readyState === WebSocket.CONNECTING)) return;
+  try {
+    await ensurePttLocalAudio();
+  } catch (error) {
+    updatePttConsoleUi(`Mikrofon dashboard belum siap: ${error.message || error}`);
+    return;
+  }
+  try {
+    pttSocket = new WebSocket(PTT_SIGNAL_WS);
+    pttSocket.onopen = () => {
+      updatePttConsoleUi(`Signaling PTT dashboard terhubung ke ${pttChannel.toUpperCase()}.`);
+      pttSend({
+        type: 'hello',
+        username: pttUsername,
+        channelId: pttChannel,
+        deviceId: pttDeviceId,
+      });
+    };
+    pttSocket.onmessage = async evt => {
+      try {
+        const message = JSON.parse(evt.data);
+        switch (message.type) {
+          case 'hello-ack':
+            pttClientId = message.clientId || '';
+            await syncPttPeers(message.peers || []);
+            break;
+          case 'peer-joined':
+            if (message.peer) await ensurePttPeer(message.peer);
+            break;
+          case 'peer-left':
+            if (message.clientId) await removePttPeer(message.clientId);
+            break;
+          case 'signal':
+            await handlePttSignal(message.fromClientId, message.data || {}, message);
+            break;
+        }
+      } catch (_) {}
+    };
+    pttSocket.onclose = () => {
+      pttSocket = null;
+      pttClientId = '';
+      pttTalking = false;
+      updatePttConsoleUi('Signaling PTT dashboard terputus. Menyambung ulang...');
+      schedulePttReconnect();
+    };
+    pttSocket.onerror = () => {
+      try { pttSocket.close(); } catch(_) {}
+    };
+  } catch (error) {
+    updatePttConsoleUi(`Gagal membuka signaling PTT: ${error.message || error}`);
+    schedulePttReconnect();
+  }
+}
+
+async function startDashboardPtt() {
+  if (pttTalking) return;
+  try {
+    await ensurePttLocalAudio();
+    const res = await fetch(DASHBOARD_PTT_START_URL, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelId: pttChannel }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (res.status === 409) {
+      updatePttConsoleUi(`Channel ${pttChannel.toUpperCase()} sedang dipakai ${payload.holderOfficerId || 'user lain'}.`);
+      return;
+    }
+    if (!res.ok) {
+      updatePttConsoleUi(payload.error || 'Dashboard gagal mengambil floor PTT.');
+      return;
+    }
+    if (!pttSocket || pttSocket.readyState !== WebSocket.OPEN) {
+      await connectPttSocket();
+    }
+    if (pttLocalTrack) pttLocalTrack.enabled = true;
+    pttFloorHeld = true;
+    pttTalking = true;
+    window.__pttTalkStartedAt = Date.now();
+    updatePttConsoleUi(`Dashboard command center mengudara di ${pttChannel.toUpperCase()}.`);
+  } catch (error) {
+    updatePttConsoleUi(`Gagal mengudara: ${error.message || error}`);
+  }
+}
+
+async function stopDashboardPtt() {
+  if (!pttTalking && !pttFloorHeld) return;
+  const startedAt = window.__pttTalkStartedAt || Date.now();
+  const durationSeconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+  window.__pttTalkStartedAt = null;
+  if (pttLocalTrack) pttLocalTrack.enabled = false;
+  pttTalking = false;
+  try {
+    await fetch(DASHBOARD_PTT_STOP_URL, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelId: pttChannel, durationSeconds }),
+    });
+  } catch (_) {}
+  pttFloorHeld = false;
+  updatePttConsoleUi(`Dashboard kembali standby di ${pttChannel.toUpperCase()}.`);
+  loadPtt();
+}
+
+async function shutdownDashboardPtt() {
+  if (pttFloorHeld || pttTalking) {
+    try {
+      await fetch(DASHBOARD_PTT_STOP_URL, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channelId: pttChannel, durationSeconds: 0 }),
+        keepalive: true,
+      });
+    } catch (_) {}
+  }
+  pttTalking = false;
+  pttFloorHeld = false;
+  window.__pttTalkStartedAt = null;
+  if (pttLocalTrack) pttLocalTrack.enabled = false;
+  if (pttReconnectTimer) {
+    clearTimeout(pttReconnectTimer);
+    pttReconnectTimer = null;
+  }
+  if (pttSocket) {
+    try { pttSocket.close(); } catch (_) {}
+    pttSocket = null;
+  }
+  await closeAllPttPeers();
+}
+
+function bindPttConsole() {
+  document.querySelectorAll('[data-ptt-channel]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const channelId = btn.dataset.pttChannel || 'ch1';
+      if (channelId === pttChannel) return;
+      joinPttChannel(channelId);
+    });
+  });
+
+  const talkBtn = document.getElementById('ptt-talk-btn');
+  if (!talkBtn) return;
+
+  const pressStart = event => {
+    event.preventDefault();
+    startDashboardPtt();
+  };
+  const pressEnd = event => {
+    event.preventDefault();
+    stopDashboardPtt();
+  };
+
+  talkBtn.addEventListener('pointerdown', pressStart);
+  talkBtn.addEventListener('pointerup', pressEnd);
+  talkBtn.addEventListener('pointercancel', pressEnd);
+  talkBtn.addEventListener('pointerleave', event => {
+    if (pttTalking) pressEnd(event);
+  });
+
+  window.addEventListener('pointerup', () => {
+    if (pttTalking) stopDashboardPtt();
+  });
+  window.addEventListener('beforeunload', () => {
+    shutdownDashboardPtt();
+  });
+}
 
 // â”€â”€ MARKER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function makeMarker(e) {
@@ -926,18 +1397,29 @@ async function loadPtt() {
     } catch(_) {}
   }));
   items.sort((a,b)=>(b.timeLabel||'').localeCompare(a.timeLabel||''));
-  allPtt = items;
+  const activeTalkers = allPresence
+    .filter(e => e.isTalking)
+    .map(e => ({
+      initials: (e.username || '??').slice(0,2).toUpperCase(),
+      speakerName: e.username || 'Unknown',
+      statusLabel: 'TX aktif',
+      timeLabel: 'LIVE',
+      _ch: e.activeChannelId || '',
+      _live: true,
+    }));
+  const visibleItems = [...activeTalkers, ...items];
+  allPtt = visibleItems;
 
   const el = document.getElementById('tab-ptt');
   const talkCount = allPresence.filter(e=>e.isTalking).length;
   document.getElementById('s-ptt').textContent = talkCount;
 
-  if (!items.length) {
+  if (!visibleItems.length) {
     el.innerHTML = `<div class="tab-empty"><span class="tab-empty-icon">PTT</span>Belum ada transmisi PTT.<br>Aktifkan push-to-talk di aplikasi.</div>`;
     return;
   }
 
-  el.innerHTML = items.map(item => {
+  el.innerHTML = visibleItems.map(item => {
     const ch = (item._ch||'').toUpperCase();
     const dur = item.statusLabel||'0d';
     return `<div class="feed-card">
@@ -952,8 +1434,8 @@ async function loadPtt() {
     </div>`;
   }).join('');
 
-  if (items.length > prevPttLen && prevPttLen > 0) setNotif('ptt', items.length - prevPttLen);
-  prevPttLen = items.length;
+  if (visibleItems.length > prevPttLen && prevPttLen > 0) setNotif('ptt', visibleItems.length - prevPttLen);
+  prevPttLen = visibleItems.length;
 }
 
 // â”€â”€ REPORTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1503,6 +1985,8 @@ setInterval(tick, 1000); tick();
 refresh();
 setInterval(refresh, REFRESH);
 connectLiveSocket();
+bindPttConsole();
+connectPttSocket();
 </script>
 </body>
 </html>
