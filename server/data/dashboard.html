@@ -393,6 +393,12 @@ html,body{height:100%;overflow:hidden;
   font-weight:800;
   color:#365b87;
 }
+.ptt-channel-roster-sub{
+  margin-bottom:10px;
+  font-size:10px;
+  color:#7f97b5;
+  line-height:1.5;
+}
 .ptt-channel-roster-list{
   display:flex;
   flex-wrap:wrap;
@@ -808,6 +814,7 @@ html,body{height:100%;overflow:hidden;
           <div class="ptt-channel-roster-title">Personel di Channel</div>
           <div class="ptt-channel-roster-count" id="ptt-channel-roster-count">0 personel</div>
         </div>
+        <div class="ptt-channel-roster-sub" id="ptt-channel-roster-sub">Menampilkan personel aktif yang online pada channel terpilih.</div>
         <div class="ptt-channel-roster-list" id="ptt-channel-roster-list">
           <div class="ptt-channel-roster-empty">Belum ada personel yang bergabung ke channel ini.</div>
         </div>
@@ -991,10 +998,12 @@ function updatePttConsoleUi(detail = '') {
 function renderPttChannelRoster() {
   const rosterEl = document.getElementById('ptt-channel-roster-list');
   const countEl = document.getElementById('ptt-channel-roster-count');
-  if (!rosterEl || !countEl) return;
+  const subEl = document.getElementById('ptt-channel-roster-sub');
+  if (!rosterEl || !countEl || !subEl) return;
 
+  const onlineEntries = allPresence.filter(entry => entry.resolvedStatus === 'online');
   const groupedCounts = { ch1: 0, ch2: 0, ch3: 0, ch4: 0 };
-  allPresence.forEach(entry => {
+  onlineEntries.forEach(entry => {
     const channelId = (entry.activeChannelId || '').toLowerCase();
     if (groupedCounts[channelId] !== undefined) groupedCounts[channelId] += 1;
   });
@@ -1005,17 +1014,24 @@ function renderPttChannelRoster() {
     btn.innerHTML = `${channelId.toUpperCase()}<small>${count} personel</small>`;
   });
 
-  const members = allPresence
+  const allMembersInChannel = allPresence
     .filter(entry => (entry.activeChannelId || '').toLowerCase() === pttChannel)
+    .sort((a, b) => (a.username || '').localeCompare(b.username || ''));
+  const members = allMembersInChannel
+    .filter(entry => entry.resolvedStatus === 'online')
     .sort((a, b) => {
-      const rank = item => item.isTalking ? 0 : item.resolvedStatus === 'online' ? 1 : 2;
+      const rank = item => item.isTalking ? 0 : 1;
       return rank(a) - rank(b) || (a.username || '').localeCompare(b.username || '');
     });
+  const offlineCount = Math.max(0, allMembersInChannel.length - members.length);
 
   countEl.textContent = `${members.length} personel`;
+  subEl.textContent = offlineCount > 0
+    ? `${members.length} online · ${offlineCount} offline/stale disembunyikan untuk tampilan operasional.`
+    : `Menampilkan personel aktif yang online pada ${pttChannel.toUpperCase()}.`;
 
   if (!members.length) {
-    rosterEl.innerHTML = `<div class="ptt-channel-roster-empty">Belum ada personel yang bergabung ke ${pttChannel.toUpperCase()}.</div>`;
+    rosterEl.innerHTML = `<div class="ptt-channel-roster-empty">Belum ada personel online di ${pttChannel.toUpperCase()}. Pastikan perangkat sudah login dan heartbeat masih aktif.</div>`;
     return;
   }
 
