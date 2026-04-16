@@ -24,6 +24,14 @@ npm install
 npm start
 ```
 
+Launcher berjalan dalam mode fullscreen command center secara default.
+
+Kalau ingin membuka dalam mode window biasa saat pengujian:
+
+```bash
+POLRI_BWC_KIOSK=0 npm start
+```
+
 ## Build Windows `.exe`
 
 Jalankan dari mesin Windows:
@@ -53,3 +61,5 @@ desktop/dist/
   - `Minimize`
   - `Tutup`
 - branding command center langsung muncul di dalam app, bukan UI browser
+- ikon Windows dibangkitkan otomatis dari `assets/icon.svg` ke `build/icon.ico`
+- fullscreen command center aktif default

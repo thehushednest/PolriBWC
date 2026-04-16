@@ -5,6 +5,7 @@ const DASHBOARD_URL =
   process.env.POLRI_BWC_DASHBOARD_URL ||
   'https://polribwc.asksenopati.com/dashboard/login';
 const ALLOWED_ORIGIN = new URL(DASHBOARD_URL).origin;
+const DEFAULT_KIOSK = (process.env.POLRI_BWC_KIOSK || '1') !== '0';
 
 let splashWindow = null;
 let mainWindow = null;
@@ -87,6 +88,9 @@ function createMainWindow() {
   mainWindow.once('ready-to-show', () => {
     if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
     mainWindow.maximize();
+    if (DEFAULT_KIOSK) {
+      mainWindow.setFullScreen(true);
+    }
     mainWindow.show();
   });
 

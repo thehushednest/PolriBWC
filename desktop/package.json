@@ -6,8 +6,10 @@
   "author": "Senopati",
   "license": "UNLICENSED",
   "scripts": {
-    "start": "electron .",
-    "dist:win": "electron-builder --win nsis"
+    "prepare:assets": "node scripts/generate-icons.mjs",
+    "postinstall": "npm run prepare:assets",
+    "start": "npm run prepare:assets && electron .",
+    "dist:win": "npm run prepare:assets && electron-builder --win nsis"
   },
   "build": {
     "appId": "com.asksenopati.polribwc.commandcenter",
@@ -15,12 +17,15 @@
     "files": [
       "main.js",
       "preload.js",
-      "splash.html"
+      "splash.html",
+      "assets/**/*",
+      "build/**/*"
     ],
     "directories": {
       "output": "dist"
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis"
       ]
@@ -33,6 +38,8 @@
   },
   "devDependencies": {
     "electron": "^37.2.0",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "png-to-ico": "^2.1.8",
+    "sharp": "^0.34.2"
   }
 }
