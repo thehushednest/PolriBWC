@@ -140,6 +140,7 @@ html,body{height:100%;overflow:hidden;
 
 /* â”€â”€ OFFICER LIST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .officer-scroll{flex:1;overflow-y:auto;padding:4px 18px 18px}
+.officer-scroll.is-hidden{display:none}
 .officer-card{
   background:rgba(255,255,255,.06);
   border:1px solid rgba(255,255,255,.10);border-radius:18px;
@@ -178,18 +179,6 @@ html,body{height:100%;overflow:hidden;
 .oc-info{flex:1;min-width:0}
 .oc-name{font-size:14px;font-weight:700;color:#ffffff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .oc-device{font-size:11px;color:#d4e0e3;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.oc-badges{display:flex;gap:4px;flex-wrap:wrap;margin-top:7px}
-.badge{
-  display:inline-flex;align-items:center;gap:3px;
-  padding:3px 8px;border-radius:999px;font-size:10px;font-weight:700;
-  border:1px solid}
-.badge-online {background:rgba(18,194,106,.12);color:#b7ffd0;border-color:rgba(18,194,106,.24)}
-.badge-offline{background:rgba(255,255,255,.06);color:#d7e3e6;border-color:rgba(255,255,255,.18)}
-.badge-rec    {background:var(--green-dim);color:var(--green);border-color:rgba(18,194,106,.3)}
-.badge-ptt    {background:rgba(240,64,64,.12);color:#ffc1c1;border-color:rgba(240,64,64,.24)}
-.badge-ch     {background:rgba(114,184,255,.13);color:#cce6ff;border-color:rgba(114,184,255,.22)}
-.badge-gps    {background:rgba(14,165,233,.10);color:#98ecff;border-color:rgba(14,165,233,.18)}
-.badge-nogps  {background:rgba(255,255,255,.04);color:#c3d0d5;border-color:rgba(255,255,255,.12)}
 .oc-empty{padding:40px 16px;text-align:center;color:var(--muted);font-size:12px;line-height:1.8}
 .oc-empty-icon{
   width:46px;height:46px;border-radius:14px;
@@ -199,19 +188,45 @@ html,body{height:100%;overflow:hidden;
   color:#234145;background:linear-gradient(135deg,#ffffff,#d9e8ef)}
 .oc-empty-icon::before{content:'BWC';font-size:11px}
 
-/* â”€â”€ FILTER TABS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-.filter-bar{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:0 18px 16px;border-bottom:none;flex-shrink:0}
-.flt{
-  flex:1;padding:12px 10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.12);
-  border-radius:14px;color:#edf4f6;font-size:10px;font-weight:800;
-  cursor:pointer;font-family:inherit;text-transform:uppercase;letter-spacing:.4px;
-  text-align:center;transition:all .15s}
-.flt.active{
-  background:linear-gradient(180deg, #fefefe 0%, #edf6ff 100%);
-  border-color:rgba(255,255,255,.86);
-  color:#0f315f;
-  box-shadow:0 10px 22px rgba(66,151,255,.20)}
-.flt:hover:not(.active){border-color:rgba(255,255,255,.22);color:#ffffff}
+.sidebar-l-activity{
+  margin:0 18px 14px;
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:18px;
+  background:rgba(255,255,255,.05);
+  overflow:hidden;
+  flex:1 1 0;
+  min-height:360px;
+  box-shadow:0 16px 28px rgba(0,0,0,.08)}
+.sidebar-l-activity{
+  display:flex;
+  flex-direction:column;
+}
+.sidebar-l .tab-bar{
+  padding:0 12px;
+  border-bottom:1px solid rgba(255,255,255,.08)}
+.sidebar-l .tab-btn{
+  color:#b8c8cc;
+  border-bottom-color:transparent}
+.sidebar-l .tab-btn.active{
+  color:#ffffff;
+  border-bottom-color:#72b8ff}
+.sidebar-l .tab-btn:hover:not(.active){color:#ffffff}
+.sidebar-l .tab-pane{
+  min-height:0;
+  max-height:none;
+  flex:1 1 auto;
+  overflow-y:auto;
+  padding:14px 12px 12px}
+.sidebar-l .feed-card{
+  background:rgba(255,255,255,.96);
+  box-shadow:none}
+.sidebar-l .feed-card:hover{
+  box-shadow:0 16px 26px rgba(0,0,0,.10)}
+.sidebar-l .tab-empty{color:#d0dbe0}
+.sidebar-l .tab-empty-icon{
+  background:rgba(255,255,255,.10);
+  border-color:rgba(255,255,255,.18);
+  color:#edf4f6}
 
 /* â”€â”€ MAP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .map-wrap{position:relative;flex:1;display:flex;flex-direction:column;background:linear-gradient(180deg,#ffffff,#f4f9ff)}
@@ -370,6 +385,7 @@ html,body{height:100%;overflow:hidden;
   border:1px solid var(--border);
   background:linear-gradient(180deg,#fbfdff,#f3f8ff);
 }
+.ptt-channel-roster.is-hidden{display:none}
 .ptt-channel-roster-head{
   display:flex;
   align-items:center;
@@ -752,19 +768,26 @@ html,body{height:100%;overflow:hidden;
       <span class="sec-title">Daftar Personel</span>
       <span class="sec-badge active" id="online-badge">0 Online</span>
     </div>
-    <div class="filter-bar">
-      <button class="flt active" id="flt-all" onclick="setFilter('all',this)">Semua</button>
-      <button class="flt" id="flt-online" onclick="setFilter('online',this)">Online</button>
-      <button class="flt" id="flt-recording" onclick="setFilter('rec',this)">Rekam</button>
-      <button class="flt" id="flt-talking" onclick="setFilter('ptt',this)">PTT</button>
-    </div>
-    <div class="officer-scroll" id="officer-list">
-      <div class="oc-empty">
-        <span class="oc-empty-icon">BWC</span>
-        Menunggu perangkat terhubung...<br>
-        Pastikan server berjalan dan<br>tester sudah login ke aplikasi.
+    <div class="sidebar-l-activity">
+      <div class="tab-bar">
+        <button class="tab-btn active" onclick="openTab('ptt',this)">
+          PTT Log
+          <span class="tab-notif" id="notif-ptt">0</span>
+        </button>
+        <button class="tab-btn" onclick="openTab('rec',this)">
+          Rekaman
+          <span class="tab-notif" id="notif-rec">0</span>
+        </button>
+        <button class="tab-btn" onclick="openTab('report',this)">
+          Laporan
+          <span class="tab-notif" id="notif-report">0</span>
+        </button>
       </div>
+      <div class="tab-pane active" id="tab-ptt"></div>
+      <div class="tab-pane" id="tab-rec"></div>
+      <div class="tab-pane" id="tab-report"></div>
     </div>
+    <div class="officer-scroll" id="officer-list"></div>
   </div>
 
   <!-- CENTER: Map -->
@@ -820,23 +843,6 @@ html,body{height:100%;overflow:hidden;
         </div>
       </div>
     </div>
-    <div class="tab-bar">
-      <button class="tab-btn active" onclick="openTab('ptt',this)">
-        PTT Log
-        <span class="tab-notif" id="notif-ptt">0</span>
-      </button>
-      <button class="tab-btn" onclick="openTab('rec',this)">
-        Rekaman
-        <span class="tab-notif" id="notif-rec">0</span>
-      </button>
-      <button class="tab-btn" onclick="openTab('report',this)">
-        Laporan
-        <span class="tab-notif" id="notif-report">0</span>
-      </button>
-    </div>
-    <div class="tab-pane active" id="tab-ptt"></div>
-    <div class="tab-pane"        id="tab-rec"></div>
-    <div class="tab-pane"        id="tab-report"></div>
   </div>
 
 </div>
@@ -901,7 +907,7 @@ let allRecs     = [];
 let allLive     = [];
 let allReports  = [];
 let markers     = {};
-let activeFilter= 'all';
+let activeFilter= 'online';
 let activeTab   = 'ptt';
 let prevPttLen  = 0;
 let prevRecLen  = 0;
@@ -996,10 +1002,11 @@ function updatePttConsoleUi(detail = '') {
 }
 
 function renderPttChannelRoster() {
+  const rosterCard = document.querySelector('.ptt-channel-roster');
   const rosterEl = document.getElementById('ptt-channel-roster-list');
   const countEl = document.getElementById('ptt-channel-roster-count');
   const subEl = document.getElementById('ptt-channel-roster-sub');
-  if (!rosterEl || !countEl || !subEl) return;
+  if (!rosterCard || !rosterEl || !countEl || !subEl) return;
 
   const onlineEntries = allPresence.filter(entry => entry.resolvedStatus === 'online');
   const groupedCounts = { ch1: 0, ch2: 0, ch3: 0, ch4: 0 };
@@ -1031,10 +1038,12 @@ function renderPttChannelRoster() {
     : `Menampilkan personel aktif yang online pada ${pttChannel.toUpperCase()}.`;
 
   if (!members.length) {
-    rosterEl.innerHTML = `<div class="ptt-channel-roster-empty">Belum ada personel online di ${pttChannel.toUpperCase()}. Pastikan perangkat sudah login dan heartbeat masih aktif.</div>`;
+    rosterCard.classList.add('is-hidden');
+    rosterEl.innerHTML = '';
     return;
   }
 
+  rosterCard.classList.remove('is-hidden');
   rosterEl.innerHTML = members.map(entry => {
     const statusText = entry.isTalking
       ? 'Sedang TX'
@@ -1515,6 +1524,7 @@ function setFilter(f, btn) {
 // â”€â”€ OFFICER LIST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function renderOfficerList() {
   const el = document.getElementById('officer-list');
+  if (!el) return;
   let data = [...allPresence];
   if (activeFilter==='online')  data = data.filter(e=>e.resolvedStatus==='online');
   if (activeFilter==='rec')     data = data.filter(e=>e.status==='recording' || e.status==='live');
@@ -1526,24 +1536,19 @@ function renderOfficerList() {
   });
 
   if (!data.length) {
-    el.innerHTML = `<div class="oc-empty">
-      <span class="oc-empty-icon">BWC</span>
-      ${allPresence.length ? 'Tidak ada personel sesuai filter.' :
-        'Menunggu perangkat terhubung...<br>Pastikan server aktif dan<br>tester sudah login.'}
-    </div>`;
+    el.classList.add('is-hidden');
+    el.innerHTML = '';
     return;
   }
 
+  el.classList.remove('is-hidden');
   el.innerHTML = data.map(e => {
     const isRec  = e.status==='recording' || e.status==='live';
     const isPtt  = e.isTalking;
     const isOn   = e.resolvedStatus==='online';
     const avCol  = isPtt?'red':isRec?'green':isOn?'':'grey';
     const cardCl = isPtt?'is-talking':isRec?'is-recording':isOn?'':'is-offline';
-    const ch     = e.activeChannelId ? e.activeChannelId.toUpperCase() : null;
-    const hasLoc = e.latitude && e.longitude;
     const since  = fmt(e.lastSeenIso);
-    const locStr = hasLoc ? `${e.latitude.toFixed(4)}, ${e.longitude.toFixed(4)}` : null;
 
     return `<div class="officer-card ${cardCl}" onclick="focusOfficer('${e.username}')">
       <div class="oc-row">
@@ -1559,15 +1564,6 @@ function renderOfficerList() {
           <div class="wave-bar"></div><div class="wave-bar"></div>
           <div class="wave-bar"></div><div class="wave-bar"></div>
         </div>` : ''}
-      </div>
-      <div class="oc-badges">
-        <span class="badge ${isOn?'badge-online':'badge-offline'}">${isOn?'Online':'Offline'}</span>
-        ${isRec ? '<span class="badge badge-rec">REC</span>' : ''}
-        ${isPtt ? '<span class="badge badge-ptt">PTT</span>' : ''}
-        ${ch ? `<span class="badge badge-ch">${ch}</span>` : ''}
-        ${hasLoc
-          ? `<span class="badge badge-gps"> ${locStr}</span>`
-          : '<span class="badge badge-nogps"> No GPS</span>'}
       </div>
     </div>`;
   }).join('');
