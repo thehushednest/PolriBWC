@@ -128,6 +128,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   Timer? _pttRefreshTimer;
   Timer? _sosPollTimer;
   Timer? _liveRefreshTimer;
+  Timer? _remoteCommandTimer;
   String _selectedGalleryFilter = 'Semua';
   String _selectedReportType = 'Penangkapan';
   String? _selectedRecordingId;
@@ -157,6 +158,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
   int _liveFrameCount = 0;
   String _liveFrameStatus = 'Belum ada frame live';
   String _liveSignalingStatus = 'Signaling belum aktif';
+  bool _isProcessingRemoteCommand = false;
   late final AppConfig _config;
   late final BackendGateway _backend;
   late final PttWebRtcService _pttWebRtcService;
@@ -496,6 +498,66 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     });
   }
 
+  Future<void> _pollRemoteDeviceCommands() async {
+    final session = _session;
+    if (session == null || _isProcessingRemoteCommand) return;
+    _isProcessingRemoteCommand = true;
+    try {
+      final command = await _backend.pollRemoteDeviceCommand();
+      if (command == null || command.commandId.isEmpty) return;
+      await _handleRemoteDeviceCommand(command);
+    } finally {
+      _isProcessingRemoteCommand = false;
+    }
+  }
+
+  Future<void> _handleRemoteDeviceCommand(RemoteDeviceCommand command) async {
+    if (command.type != 'start_live') {
+      await _backend.acknowledgeRemoteDeviceCommand(
+        commandId: command.commandId,
+        status: 'ignored',
+        message: 'unsupported_command',
+      );
+      return;
+    }
+
+    if (_isRecording && _activeLiveSessionId != null) {
+      await _backend.acknowledgeRemoteDeviceCommand(
+        commandId: command.commandId,
+        status: 'ignored',
+        message: 'already_live',
+      );
+      if (mounted) {
+        _showMessage('Perintah dashboard diterima. Live Cam sudah aktif.');
+      }
+      return;
+    }
+
+    final nextChannel = command.channelId.isEmpty ? 'ch1' : command.channelId;
+    if (mounted) {
+      setState(() {
+        _selectedPttChannelId = nextChannel;
+        _selectedTag = command.tagLabel.isEmpty
+            ? 'Pantauan Dashboard'
+            : command.tagLabel;
+      });
+    }
+    _showMessage(
+      'Perintah dashboard diterima. Membuka Live Cam ${nextChannel.toUpperCase()}.',
+    );
+    await _startRecordingMode();
+    final success = _isRecording && _activeLiveSessionId != null;
+    await _backend.acknowledgeRemoteDeviceCommand(
+      commandId: command.commandId,
+      status: success ? 'completed' : 'failed',
+      message: success
+          ? 'live_started'
+          : (_cameraError?.isNotEmpty == true
+                ? _cameraError
+                : _liveFrameStatus),
+    );
+  }
+
   Future<void> _connectLiveSignaling(LiveStreamSession liveSession) async {
     await _disconnectLiveSignaling();
     if (!mounted) return;
@@ -663,6 +725,14 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     _liveRefreshTimer = Timer.periodic(
       const Duration(seconds: 4),
       (_) => unawaited(_refreshLiveSessions()),
+    );
+  }
+
+  void _startRemoteCommandLoop() {
+    _remoteCommandTimer?.cancel();
+    _remoteCommandTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => unawaited(_pollRemoteDeviceCommands()),
     );
   }
 
@@ -836,6 +906,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     _presenceTimer?.cancel();
     _pttRefreshTimer?.cancel();
     _liveRefreshTimer?.cancel();
+    _remoteCommandTimer?.cancel();
     _sosPollTimer?.cancel();
     unawaited(_stopLiveImageStream());
     if (session != null && liveSessionId != null) {
@@ -987,9 +1058,11 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       unawaited(_sendPresenceHeartbeat());
       unawaited(_refreshSosAlerts());
       unawaited(_refreshLiveSessions());
+      unawaited(_pollRemoteDeviceCommands());
       _startPttRefreshLoop();
       _startSosPolling();
       _startLiveRefreshLoop();
+      _startRemoteCommandLoop();
       _presenceTimer?.cancel();
       _presenceTimer = Timer.periodic(
         const Duration(seconds: 15),
@@ -1237,9 +1310,11 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     unawaited(_sendPresenceHeartbeat());
     unawaited(_refreshSosAlerts());
     unawaited(_refreshLiveSessions());
+    unawaited(_pollRemoteDeviceCommands());
     _startPttRefreshLoop();
     _startSosPolling();
     _startLiveRefreshLoop();
+    _startRemoteCommandLoop();
     _presenceTimer?.cancel();
     _presenceTimer = Timer.periodic(
       const Duration(seconds: 15),
@@ -1298,6 +1373,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
     );
     _pttRefreshTimer?.cancel();
     _liveRefreshTimer?.cancel();
+    _remoteCommandTimer?.cancel();
     _sosPollTimer?.cancel();
     if (notifyServer && session != null) {
       if (liveSessionId != null) {
@@ -1349,6 +1425,7 @@ class _BodyWornHomePageState extends State<BodyWornHomePage>
       _liveFrameCount = 0;
       _liveSignalingStatus = 'Signaling belum aktif';
       _liveFrameStatus = 'Belum ada frame live';
+      _isProcessingRemoteCommand = false;
       _currentLat = null;
       _currentLng = null;
     });

@@ -179,6 +179,31 @@ html,body{height:100%;overflow:hidden;
 .oc-info{flex:1;min-width:0}
 .oc-name{font-size:14px;font-weight:700;color:#ffffff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .oc-device{font-size:11px;color:#d4e0e3;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.oc-actions{margin-top:10px;display:flex;justify-content:flex-end}
+.oc-action-btn{
+  min-width:94px;
+  padding:8px 12px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.18);
+  background:rgba(255,255,255,.08);
+  color:#ffffff;
+  font-size:10px;
+  font-weight:800;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+  cursor:pointer;
+  transition:transform .15s ease,border-color .15s ease,background .15s ease;
+}
+.oc-action-btn:hover{
+  transform:translateY(-1px);
+  border-color:rgba(255,255,255,.28);
+  background:rgba(255,255,255,.14);
+}
+.oc-action-btn:disabled{
+  opacity:.5;
+  cursor:not-allowed;
+  transform:none;
+}
 .oc-empty{padding:40px 16px;text-align:center;color:var(--muted);font-size:12px;line-height:1.8}
 .oc-empty-icon{
   width:46px;height:46px;border-radius:14px;
@@ -875,6 +900,7 @@ const LIVE_SIGNAL_WS = API_BASE.replace(/^http/, 'ws') + '/api/v1/live/signal/ws
 const PTT_SIGNAL_WS = API_BASE.replace(/^http/, 'ws') + '/api/v1/ptt/signal/ws';
 const DASHBOARD_PTT_START_URL = API_BASE + '/dashboard/api/ptt/transmit/start';
 const DASHBOARD_PTT_STOP_URL = API_BASE + '/dashboard/api/ptt/transmit/stop';
+const DASHBOARD_FORCE_LIVE_URL = API_BASE + '/dashboard/api/live/force-start';
 const REFRESH = 8000;
 const DEFAULT_LAT = -6.2088, DEFAULT_LNG = 106.8456;
 const PTT_ICE_SERVERS = [
@@ -1549,6 +1575,7 @@ function renderOfficerList() {
     const avCol  = isPtt?'red':isRec?'green':isOn?'':'grey';
     const cardCl = isPtt?'is-talking':isRec?'is-recording':isOn?'':'is-offline';
     const since  = fmt(e.lastSeenIso);
+    const activeChannel = (e.activeChannelId || '').toLowerCase() || 'ch1';
 
     return `<div class="officer-card ${cardCl}" onclick="focusOfficer('${e.username}')">
       <div class="oc-row">
@@ -1565,6 +1592,9 @@ function renderOfficerList() {
           <div class="wave-bar"></div><div class="wave-bar"></div>
         </div>` : ''}
       </div>
+      ${isOn ? `<div class="oc-actions">
+        <button class="oc-action-btn" type="button" onclick="event.stopPropagation(); forceOfficerLive('${e.username}','${activeChannel}')">Paksa Live</button>
+      </div>` : ''}
     </div>`;
   }).join('');
 }
@@ -1730,6 +1760,29 @@ function showAlert(text) {
 }
 function dismissAlert() {
   document.getElementById('alert-bar').classList.remove('visible');
+}
+
+async function forceOfficerLive(officerId, channelId = 'ch1') {
+  try {
+    const response = await fetch(DASHBOARD_FORCE_LIVE_URL, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        officerId,
+        channelId: channelId || 'ch1',
+        tagLabel: 'Pantauan Dashboard',
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      showAlert(payload.message || payload.error || `Gagal mengirim perintah live ke ${officerId}.`);
+      return;
+    }
+    showAlert(`Perintah live dikirim ke ${officerId} pada ${(payload.channelId || channelId || 'ch1').toUpperCase()}.`);
+  } catch (error) {
+    showAlert(`Gagal menghubungi server live command: ${error.message || error}`);
+  }
 }
 
 // â”€â”€ CLOCK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

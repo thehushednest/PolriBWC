@@ -24,6 +24,7 @@ const _dashboardAdminPhoneDisplay = '08131850060';
 const _dashboardAdminPhoneWhatsApp = '628131850060';
 const _dashboardPttOfficerId = 'dashboard_admin';
 const _dashboardPttDeviceId = 'dashboard_console';
+const _dashboardLiveIssuerId = 'dashboard_admin';
 const _dashboardOtpHttpBaseUrl = 'http://127.0.0.1:8030';
 const _dashboardOtpHttpBearerToken =
     'f7a10e21ab3b9af1024aae4930007d721e9d18e4771c2f3b90ba581f62dca0aa';
@@ -373,6 +374,75 @@ Future<void> _handleRequest(
       });
     }
 
+    if (method == 'POST' && path == '/dashboard/api/live/force-start') {
+      if (!_isDashboardAuthorized(request, dashboardAuth)) {
+        return _rejectDashboardUnauthorized(response);
+      }
+      final body = await _readJson(request);
+      final officerId = (body['officerId'] as String? ?? '').trim();
+      if (officerId.isEmpty) {
+        response.statusCode = HttpStatus.badRequest;
+        return _writeJson(response, {'error': 'officerId required'});
+      }
+      if (!_isOfficerOnline(store.state, officerId)) {
+        response.statusCode = HttpStatus.conflict;
+        return _writeJson(response, {
+          'status': 'offline',
+          'officerId': officerId,
+          'message': 'Perangkat target sedang offline.',
+        });
+      }
+      final activeLive = store.state.liveSessions.values.firstWhere(
+        (entry) => (entry['officerId'] as String? ?? '') == officerId,
+        orElse: () => const {},
+      );
+      if (activeLive.isNotEmpty) {
+        response.statusCode = HttpStatus.conflict;
+        return _writeJson(response, {
+          'status': 'already_live',
+          'officerId': officerId,
+          'sessionId': activeLive['sessionId'] ?? '',
+          'message': 'Perangkat target sudah membuka live stream.',
+        });
+      }
+      final channelId = (body['channelId'] as String? ?? 'ch1').trim();
+      final tagLabel = (body['tagLabel'] as String? ?? 'Pantauan Dashboard')
+          .trim();
+      final notes = (body['notes'] as String? ?? '').trim();
+      final commandId =
+          'CMD_${DateTime.now().toUtc().toIso8601String().replaceAll(RegExp(r'[-:.TZ]'), '')}';
+      final queued = [
+        {
+          'commandId': commandId,
+          'type': 'start_live',
+          'officerId': officerId,
+          'channelId': channelId.isEmpty ? 'ch1' : channelId,
+          'tagLabel': tagLabel.isEmpty ? 'Pantauan Dashboard' : tagLabel,
+          'issuedAtIso': DateTime.now().toUtc().toIso8601String(),
+          'issuedBy': _dashboardLiveIssuerId,
+          'notes': notes,
+        },
+        ...((store.state.pendingDeviceCommands[officerId] ?? const [])
+            .where((item) => (item['type'] as String? ?? '') != 'start_live')),
+      ].take(5).toList();
+      store.state = store.state.copyWith(
+        pendingDeviceCommands: {
+          ...store.state.pendingDeviceCommands,
+          officerId: queued,
+        },
+      );
+      await store.save();
+      stdout.writeln(
+        '[${_clockNow()}][dashboard-live-force] officer=$officerId channel=${channelId.isEmpty ? 'ch1' : channelId} command=$commandId',
+      );
+      return _writeJson(response, {
+        'status': 'queued',
+        'officerId': officerId,
+        'commandId': commandId,
+        'channelId': channelId.isEmpty ? 'ch1' : channelId,
+      });
+    }
+
     if (method == 'GET' && path == '/api/v1/health') {
       return _writeJson(response, {
         'status': 'ok',
@@ -498,6 +568,60 @@ Future<void> _handleRequest(
 
     if (method == 'GET' && path == '/api/v1/live/sessions') {
       return _writeJson(response, _resolvedLiveSessions(store));
+    }
+
+    if (method == 'GET' && path == '/api/v1/device/commands/next') {
+      final validation = _validateActiveSession(store.state, request, const {});
+      if (!validation.ok) {
+        return _rejectSessionRequest(response, validation);
+      }
+      final queue = List<Map<String, dynamic>>.from(
+        store.state.pendingDeviceCommands[validation.username] ?? const [],
+      );
+      if (queue.isEmpty) {
+        return _writeJson(response, {'command': null});
+      }
+      final nextCommand = Map<String, dynamic>.from(queue.first);
+      return _writeJson(response, {'command': nextCommand});
+    }
+
+    if (method == 'POST' && path == '/api/v1/device/commands/ack') {
+      final body = await _readJson(request);
+      final validation = _validateActiveSession(store.state, request, body);
+      if (!validation.ok) {
+        return _rejectSessionRequest(response, validation);
+      }
+      final commandId = (body['commandId'] as String? ?? '').trim();
+      if (commandId.isEmpty) {
+        response.statusCode = HttpStatus.badRequest;
+        return _writeJson(response, {'error': 'commandId required'});
+      }
+      final queue = List<Map<String, dynamic>>.from(
+        store.state.pendingDeviceCommands[validation.username] ?? const [],
+      );
+      final updatedQueue = queue
+          .where((item) => (item['commandId'] as String? ?? '') != commandId)
+          .toList();
+      final updatedCommands = {
+        ...store.state.pendingDeviceCommands,
+      };
+      if (updatedQueue.isEmpty) {
+        updatedCommands.remove(validation.username);
+      } else {
+        updatedCommands[validation.username] = updatedQueue;
+      }
+      store.state = _touchActiveSession(
+        store.state.copyWith(pendingDeviceCommands: updatedCommands),
+        validation,
+      );
+      await store.save();
+      stdout.writeln(
+        '[${_clockNow()}][device-command-ack] officer=${validation.username} command=$commandId status=${body['status'] ?? 'completed'}',
+      );
+      return _writeJson(response, {
+        'status': 'ok',
+        'commandId': commandId,
+      });
     }
 
     if (method == 'POST' && path == '/api/v1/live/sessions') {
@@ -1894,6 +2018,7 @@ class LocalServerState {
     required this.activePttSession,
     required this.activePttSessions,
     required this.activeAuthSessions,
+    required this.pendingDeviceCommands,
   });
 
   final Map<String, Map<String, dynamic>> users;
@@ -1908,6 +2033,7 @@ class LocalServerState {
   final Map<String, dynamic> activePttSession;
   final Map<String, Map<String, dynamic>> activePttSessions;
   final Map<String, Map<String, dynamic>> activeAuthSessions;
+  final Map<String, List<Map<String, dynamic>>> pendingDeviceCommands;
 
   factory LocalServerState.seed() {
     return LocalServerState(
@@ -2029,6 +2155,7 @@ class LocalServerState {
       activePttSession: const {},
       activePttSessions: const {},
       activeAuthSessions: const {},
+      pendingDeviceCommands: const {},
     );
   }
 
@@ -2094,6 +2221,17 @@ class LocalServerState {
         (key, value) =>
             MapEntry(key.toString(), Map<String, dynamic>.from(value as Map)),
       ),
+      pendingDeviceCommands:
+          (json['pendingDeviceCommands'] as Map? ?? const {}).map(
+            (key, value) => MapEntry(
+              key.toString(),
+              List<Map<String, dynamic>>.from(
+                (value as List).map(
+                  (item) => Map<String, dynamic>.from(item as Map),
+                ),
+              ),
+            ),
+          ),
     );
   }
 
@@ -2110,6 +2248,7 @@ class LocalServerState {
     Map<String, dynamic>? activePttSession,
     Map<String, Map<String, dynamic>>? activePttSessions,
     Map<String, Map<String, dynamic>>? activeAuthSessions,
+    Map<String, List<Map<String, dynamic>>>? pendingDeviceCommands,
   }) {
     return LocalServerState(
       users: users ?? this.users,
@@ -2124,6 +2263,8 @@ class LocalServerState {
       activePttSession: activePttSession ?? this.activePttSession,
       activePttSessions: activePttSessions ?? this.activePttSessions,
       activeAuthSessions: activeAuthSessions ?? this.activeAuthSessions,
+      pendingDeviceCommands:
+          pendingDeviceCommands ?? this.pendingDeviceCommands,
     );
   }
 
@@ -2141,6 +2282,7 @@ class LocalServerState {
       'activePttSession': activePttSession,
       'activePttSessions': activePttSessions,
       'activeAuthSessions': activeAuthSessions,
+      'pendingDeviceCommands': pendingDeviceCommands,
     };
   }
 }

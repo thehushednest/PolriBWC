@@ -501,3 +501,38 @@ class LiveStreamSession {
     );
   }
 }
+
+class RemoteDeviceCommand {
+  const RemoteDeviceCommand({
+    required this.commandId,
+    required this.type,
+    required this.officerId,
+    required this.channelId,
+    required this.tagLabel,
+    required this.issuedAtIso,
+    this.issuedBy = '',
+    this.notes = '',
+  });
+
+  final String commandId;
+  final String type;
+  final String officerId;
+  final String channelId;
+  final String tagLabel;
+  final String issuedAtIso;
+  final String issuedBy;
+  final String notes;
+
+  factory RemoteDeviceCommand.fromJson(Map<String, dynamic> json) {
+    return RemoteDeviceCommand(
+      commandId: json['commandId'] as String? ?? '',
+      type: json['type'] as String? ?? '',
+      officerId: json['officerId'] as String? ?? '',
+      channelId: json['channelId'] as String? ?? 'ch1',
+      tagLabel: json['tagLabel'] as String? ?? 'Pantauan Dashboard',
+      issuedAtIso: json['issuedAtIso'] as String? ?? '',
+      issuedBy: json['issuedBy'] as String? ?? '',
+      notes: json['notes'] as String? ?? '',
+    );
+  }
+}

@@ -121,4 +121,6 @@ class AppConfig {
   String get pttTransmitStartEndpoint => '$rootUrl/ptt/transmit/start';
   String get pttTransmitStopEndpoint => '$rootUrl/ptt/transmit/stop';
   String get liveSessionsEndpoint => '$rootUrl/live/sessions';
+  String get deviceCommandsNextEndpoint => '$rootUrl/device/commands/next';
+  String get deviceCommandsAckEndpoint => '$rootUrl/device/commands/ack';
 }

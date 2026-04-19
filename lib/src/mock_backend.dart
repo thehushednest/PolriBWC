@@ -117,6 +117,16 @@ class MockBackendService implements BackendGateway {
   Future<List<LiveStreamSession>> loadLiveSessions() async => const [];
 
   @override
+  Future<RemoteDeviceCommand?> pollRemoteDeviceCommand() async => null;
+
+  @override
+  Future<void> acknowledgeRemoteDeviceCommand({
+    required String commandId,
+    required String status,
+    String? message,
+  }) async {}
+
+  @override
   Future<LiveStreamSession?> startLiveStream({
     required String officerId,
     required String officerName,

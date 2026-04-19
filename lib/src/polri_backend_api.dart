@@ -284,6 +284,49 @@ class PolriBackendApi implements BackendGateway {
   }
 
   @override
+  Future<RemoteDeviceCommand?> pollRemoteDeviceCommand() async {
+    try {
+      final response = await _client.getJsonWithStatus(
+        _config.deviceCommandsNextEndpoint,
+        headers: _authHeaders(),
+      );
+      if (response.statusCode == 401) {
+        _handleUnauthorized(response.body);
+        throw const _SessionInvalidatedException();
+      }
+      final body = response.body;
+      if (body is! Map) return null;
+      final json = Map<String, dynamic>.from(body);
+      final command = json['command'];
+      if (command is! Map) return null;
+      return RemoteDeviceCommand.fromJson(
+        Map<String, dynamic>.from(command),
+      );
+    } on _SessionInvalidatedException {
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> acknowledgeRemoteDeviceCommand({
+    required String commandId,
+    required String status,
+    String? message,
+  }) async {
+    try {
+      await _postJson(_config.deviceCommandsAckEndpoint, {
+        'commandId': commandId,
+        'status': status,
+        'message': message ?? '',
+      });
+    } on _SessionInvalidatedException {
+      return;
+    } catch (_) {}
+  }
+
+  @override
   Future<LiveStreamSession?> startLiveStream({
     required String officerId,
     required String officerName,

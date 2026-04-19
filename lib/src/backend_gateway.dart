@@ -33,6 +33,12 @@ abstract class BackendGateway {
   Future<void> saveReports(List<IncidentReport> reports);
   Future<List<SosAlert>> loadSosAlerts();
   Future<List<LiveStreamSession>> loadLiveSessions();
+  Future<RemoteDeviceCommand?> pollRemoteDeviceCommand();
+  Future<void> acknowledgeRemoteDeviceCommand({
+    required String commandId,
+    required String status,
+    String? message,
+  });
   Future<LiveStreamSession?> startLiveStream({
     required String officerId,
     required String officerName,
